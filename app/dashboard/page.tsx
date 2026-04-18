@@ -181,19 +181,25 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      {data.length === 0 && !loading ? (
-        <Card>
-          <CardContent className="p-8 text-center text-sm text-zinc-500">
-            No opportunities yet. Head to Connect and sync Gmail or paste an
-            email.
-          </CardContent>
-        </Card>
-      ) : null}
+      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="space-y-4">
+          {data.length === 0 && !loading ? (
+            <Card>
+              <CardContent className="p-8 text-center text-sm text-zinc-500">
+                No opportunities yet. Head to Connect and sync Gmail or paste
+                an email.
+              </CardContent>
+            </Card>
+          ) : null}
 
-      <div className="grid gap-4">
-        {data.map((o) => (
-          <OppCard key={o.id} opp={o} onOpen={() => setDetail(o)} />
-        ))}
+          {data.map((o) => (
+            <OppCard key={o.id} opp={o} onOpen={() => setDetail(o)} />
+          ))}
+        </div>
+
+        <aside className="lg:sticky lg:top-6 lg:self-start">
+          <ScoreLegend />
+        </aside>
       </div>
 
       <Dialog open={!!detail} onOpenChange={(v) => !v && setDetail(null)}>
@@ -202,6 +208,142 @@ export default function DashboardPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function ScoreLegend() {
+  const bands: {
+    range: string;
+    label: string;
+    tone: "red" | "orange" | "yellow" | "green" | "default" | "muted";
+    hint: string;
+  }[] = [
+    {
+      range: "80–100",
+      label: "Apply today",
+      tone: "green",
+      hint: "Rare. Full funding + known org + tight deadline + your profile closely matches the opportunity text.",
+    },
+    {
+      range: "65–80",
+      label: "Strong match",
+      tone: "green",
+      hint: "Most 'clear winners' live here. Apply this week.",
+    },
+    {
+      range: "50–65",
+      label: "Good match",
+      tone: "yellow",
+      hint: "Worth applying if you have bandwidth and docs ready.",
+    },
+    {
+      range: "35–50",
+      label: "Fair match",
+      tone: "orange",
+      hint: "Marginal — maybe missing funding info, sparse eligibility, or so-so semantic overlap.",
+    },
+    {
+      range: "0–35",
+      label: "Weak / skip",
+      tone: "muted",
+      hint: "Wrong type, unknown org, or the content barely overlaps with your profile.",
+    },
+  ];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Score legend</CardTitle>
+        <CardDescription>
+          How to read the numbers on each opportunity.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <ul className="space-y-3">
+          {bands.map((b) => (
+            <li key={b.range} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Badge tone={b.tone} className="shrink-0">
+                  {b.range}
+                </Badge>
+                <span className="font-medium">{b.label}</span>
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                {b.hint}
+              </p>
+            </li>
+          ))}
+        </ul>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Why scores rarely touch 100
+          </h4>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            A 100 would need <em>every</em> signal maxed at the same time:
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-xs text-zinc-500 dark:text-zinc-400">
+            <li>
+              <b>Urgency = 1.0</b> only in the final ≤3 days before deadline.
+            </li>
+            <li>
+              <b>Semantic</b> uses OpenAI <code>text-embedding-3-small</code>,
+              which caps around cosine 0.6 on non-duplicate text. We stretch
+              [0.2, 0.6] → [0, 1] to keep it useful, but sparse opportunity
+              bodies still land mid-band.
+            </li>
+            <li>
+              <b>Fit</b> averages only the signals the email actually declares.
+              Sparse emails (no CGPA, no skills listed) settle at a neutral
+              partial-credit value.
+            </li>
+            <li>
+              <b>Value</b> needs a recognized org (prestige in our seed), full
+              funding, and a geo match — all three.
+            </li>
+          </ul>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Realistic top in production: ~85. Realistic great match: 65–80.
+          </p>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Formula
+          </h4>
+          <pre className="whitespace-pre-wrap rounded bg-zinc-50 p-2 text-[11px] leading-snug text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+{`deterministic = 0.30*fit
+              + 0.30*urgency
+              + 0.40*value
+
+final = 0.70*deterministic
+      + 0.30*semantic*`}
+          </pre>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            *semantic is the stretched cosine between your narrated profile
+            and the opportunity chunks (RAG).
+          </p>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Urgency flag
+          </h4>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge tone="red">Red ≤ 3d</Badge>
+            <Badge tone="orange">Orange ≤ 7d</Badge>
+            <Badge tone="yellow">Yellow ≤ 14d</Badge>
+            <Badge tone="green">Green &gt; 14d</Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

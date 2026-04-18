@@ -126,6 +126,58 @@ function ConnectInner() {
     }
   };
 
+  const rescoreAll = async () => {
+    if (!studentId) return;
+    setSyncing(true);
+    setSummary(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/opportunities/rescore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId, include_hidden: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Rescore failed");
+        return;
+      }
+      setSummary({
+        emails_fetched: data.rescored,
+        new_emails: 0,
+        opportunities_active: (data.items ?? []).filter(
+          (i: { status: string }) => i.status === "active",
+        ).length,
+        items: (data.items ?? []).map(
+          (i: {
+            opportunity_id: string;
+            org_name: string | null;
+            status: string;
+            final_score: number;
+            old_final_score: number | null;
+          }) => ({
+            gmail_message_id: i.opportunity_id,
+            subject: i.org_name
+              ? `${i.org_name} — score ${Math.round(i.final_score * 100)}${
+                  i.old_final_score !== null
+                    ? ` (was ${Math.round(i.old_final_score * 100)})`
+                    : ""
+                }`
+              : `score ${Math.round(i.final_score * 100)}`,
+            sender: null,
+            ingest: "new" as const,
+            pipeline: i.status as TraceItem["pipeline"],
+            opportunity_id: i.opportunity_id,
+          }),
+        ),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const reprocessAll = async () => {
     if (!studentId) return;
     setSyncing(true);
@@ -258,7 +310,15 @@ function ConnectInner() {
                 disabled={!studentId || syncing}
                 title="Re-run the pipeline on all previously-fetched emails currently marked as noise. Useful after tuning the classifier."
               >
-                {syncing ? "Processing…" : "Reprocess stored emails"}
+                {syncing ? "Processing…" : "Reprocess noise"}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={rescoreAll}
+                disabled={!studentId || syncing}
+                title="Recompute scores for all stored opportunities using the current formula. No LLM calls."
+              >
+                {syncing ? "Rescoring…" : "Rescore all"}
               </Button>
               <Link
                 href="/dashboard"
