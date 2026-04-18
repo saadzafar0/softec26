@@ -2,7 +2,7 @@
 **Goal: Everything runs, nothing breaks**
 
 - Supabase project up, schema deployed
-- FastAPI boilerplate, React boilerplate connected
+- NEXTJS changes
 - ChromaDB initialized in persistent mode
 - Seed `org_knowledge` table + embed all org entries into ChromaDB
 - Environment variables set (Supabase URL/key, OpenAI key, Google OAuth creds)
