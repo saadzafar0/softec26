@@ -1,11 +1,11 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useStudentId } from "@/hooks/useStudent";
+import { useRouter } from "next/navigation";
+import { useStudent } from "@/hooks/useStudent";
 import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -48,6 +48,10 @@ type Opportunity = {
   urgency_flag: "Red" | "Orange" | "Yellow" | "Green" | null;
   status: string;
   inferred_fields: string[];
+  contact_email: string | null;
+  contact_phone: string | null;
+  contact_person: string | null;
+  evidence_quotes: { quote: string; supports: string }[] | null;
 };
 
 const URGENCY_TONE: Record<string, "red" | "orange" | "yellow" | "green"> = {
@@ -58,7 +62,8 @@ const URGENCY_TONE: Record<string, "red" | "orange" | "yellow" | "green"> = {
 };
 
 export default function DashboardPage() {
-  const { studentId } = useStudentId();
+  const router = useRouter();
+  const { studentId, isAuthenticated, hydrated } = useStudent();
   const [data, setData] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +101,12 @@ export default function DashboardPage() {
   }, [studentId, filterType, filterUrgency, showExpired, showIneligible]);
 
   useEffect(() => {
+    if (hydrated && !isAuthenticated) {
+      router.replace("/signin");
+    }
+  }, [hydrated, isAuthenticated, router]);
+
+  useEffect(() => {
     load();
   }, [load]);
 
@@ -105,12 +116,11 @@ export default function DashboardPage() {
     return Array.from(s).sort();
   }, [data]);
 
-  if (!studentId) {
+  if (!hydrated || !studentId) {
     return (
       <Card>
-        <CardContent className="p-6 text-sm text-zinc-600 dark:text-zinc-400">
-          Save your profile first on the Profile tab to see your ranked
-          opportunities.
+        <CardContent className="p-6 text-sm text-zinc-500 dark:text-zinc-400">
+          Loading…
         </CardContent>
       </Card>
     );
@@ -347,6 +357,60 @@ final = 0.70*deterministic
   );
 }
 
+function scoreTone(score: number): {
+  ring: string;
+  text: string;
+  label: string;
+} {
+  if (score >= 80)
+    return {
+      ring: "border-green-500 dark:border-green-400",
+      text: "text-green-700 dark:text-green-300",
+      label: "Apply today",
+    };
+  if (score >= 65)
+    return {
+      ring: "border-green-400 dark:border-green-500",
+      text: "text-green-700 dark:text-green-300",
+      label: "Strong match",
+    };
+  if (score >= 50)
+    return {
+      ring: "border-yellow-400 dark:border-yellow-500",
+      text: "text-yellow-700 dark:text-yellow-300",
+      label: "Good match",
+    };
+  if (score >= 35)
+    return {
+      ring: "border-orange-400 dark:border-orange-500",
+      text: "text-orange-700 dark:text-orange-300",
+      label: "Fair match",
+    };
+  return {
+    ring: "border-zinc-300 dark:border-zinc-700",
+    text: "text-zinc-500 dark:text-zinc-400",
+    label: "Weak",
+  };
+}
+
+function ScoreOrb({ score }: { score: number }) {
+  const { ring, text, label } = scoreTone(score);
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div
+        className={`flex h-16 w-16 items-center justify-center rounded-full border-4 bg-white dark:bg-zinc-950 ${ring}`}
+      >
+        <span className={`text-xl font-bold tabular-nums ${text}`}>
+          {score}
+        </span>
+      </div>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        {label}
+      </span>
+    </div>
+  );
+}
+
 function OppCard({
   opp,
   onOpen,
@@ -362,77 +426,76 @@ function OppCard({
       : opp.status === "ineligible"
         ? "red"
         : "default";
+
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
+    <Card className="transition-colors hover:border-zinc-300 dark:hover:border-zinc-700">
+      <div className="flex gap-5 p-6">
+        <div className="flex-1 space-y-3">
           <div className="space-y-1">
-            <CardTitle>
-              {opp.org_name ?? "Unknown org"}
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-semibold tracking-tight">
+                {opp.org_name ?? "Unknown org"}
+              </h3>
               {opp.opp_type ? (
-                <span className="ml-2 text-zinc-500">· {opp.opp_type}</span>
+                <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                  · {opp.opp_type}
+                </span>
               ) : null}
-            </CardTitle>
-            <CardDescription>
-              {opp.deadline
-                ? `Deadline: ${opp.deadline}${opp.deadline_ambiguous ? " (ambiguous)" : ""}`
-                : "Deadline not stated"}
-              {opp.funding_type ? ` · ${opp.funding_type} funding` : ""}
-              {opp.geo_scope ? ` · ${opp.geo_scope}` : ""}
-            </CardDescription>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <div className="flex items-center gap-2">
               {tone ? (
-                <Badge tone={tone}>{opp.urgency_flag}</Badge>
+                <Badge tone={tone} className="ml-auto sm:ml-0">
+                  {opp.urgency_flag}
+                </Badge>
               ) : null}
               {opp.status !== "active" ? (
                 <Badge tone={statusTone}>{opp.status}</Badge>
               ) : null}
             </div>
-            <div className="flex items-center gap-2 text-xs text-zinc-500">
-              <span>Score</span>
-              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                {score}
-              </span>
-            </div>
-            <div className="w-32">
-              <Progress value={score} />
-            </div>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              {opp.deadline
+                ? `Deadline: ${opp.deadline}${opp.deadline_ambiguous ? " (ambiguous)" : ""}`
+                : "Deadline not stated"}
+              {opp.funding_type ? ` · ${opp.funding_type} funding` : ""}
+              {opp.geo_scope ? ` · ${opp.geo_scope}` : ""}
+            </p>
+          </div>
+
+          {opp.explanation ? (
+            <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+              {opp.explanation}
+            </p>
+          ) : (
+            <p className="text-sm text-zinc-500">
+              Explanation pending — will appear after the next sync.
+            </p>
+          )}
+
+          {opp.inferred_fields?.length ? (
+            <p className="text-xs text-zinc-500">
+              Inferred from org knowledge: {opp.inferred_fields.join(", ")}
+            </p>
+          ) : null}
+
+          <div className="flex items-center gap-4 pt-1">
+            <Button variant="outline" size="sm" onClick={onOpen}>
+              View details
+            </Button>
+            {opp.application_link ? (
+              <a
+                href={opp.application_link}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-sm font-medium underline-offset-4 hover:underline"
+              >
+                Apply ↗
+              </a>
+            ) : null}
           </div>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {opp.explanation ? (
-          <p className="text-sm text-zinc-700 dark:text-zinc-300">
-            {opp.explanation}
-          </p>
-        ) : (
-          <p className="text-sm text-zinc-500">
-            Explanation pending — will appear after the next sync.
-          </p>
-        )}
-        {opp.inferred_fields?.length ? (
-          <p className="text-xs text-zinc-500">
-            Inferred from org knowledge: {opp.inferred_fields.join(", ")}
-          </p>
-        ) : null}
-      </CardContent>
-      <CardFooter className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={onOpen}>
-          View details
-        </Button>
-        {opp.application_link ? (
-          <a
-            href={opp.application_link}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="text-sm font-medium underline-offset-4 hover:underline"
-          >
-            Apply ↗
-          </a>
-        ) : null}
-      </CardFooter>
+
+        <div className="shrink-0">
+          <ScoreOrb score={score} />
+        </div>
+      </div>
     </Card>
   );
 }
@@ -457,6 +520,31 @@ function DetailView({ opp }: { opp: Opportunity }) {
       <div className="space-y-5 text-sm">
         {opp.explanation ? (
           <p className="text-zinc-700 dark:text-zinc-300">{opp.explanation}</p>
+        ) : null}
+
+        {opp.evidence_quotes && opp.evidence_quotes.length > 0 ? (
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              From the email
+            </h3>
+            <ul className="space-y-2">
+              {opp.evidence_quotes.map((q, i) => (
+                <li
+                  key={i}
+                  className="border-l-2 border-zinc-300 pl-3 dark:border-zinc-700"
+                >
+                  <p className="text-sm italic leading-relaxed text-zinc-700 dark:text-zinc-300">
+                    “{q.quote}”
+                  </p>
+                  {q.supports ? (
+                    <p className="mt-0.5 text-[11px] uppercase tracking-wide text-zinc-500">
+                      {q.supports}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
 
         <Separator />
@@ -495,6 +583,48 @@ function DetailView({ opp }: { opp: Opportunity }) {
           />
           <Detail label="Eligibility (raw)" value={opp.eligibility_raw} />
         </div>
+
+        {opp.contact_email || opp.contact_phone || opp.contact_person ? (
+          <>
+            <Separator />
+            <div>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Contact
+              </h3>
+              <div className="grid gap-3 md:grid-cols-3">
+                {opp.contact_person ? (
+                  <Detail label="Contact person" value={opp.contact_person} />
+                ) : null}
+                {opp.contact_email ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-zinc-500">
+                      Email
+                    </div>
+                    <a
+                      href={`mailto:${opp.contact_email}`}
+                      className="text-sm font-medium underline-offset-4 hover:underline"
+                    >
+                      {opp.contact_email}
+                    </a>
+                  </div>
+                ) : null}
+                {opp.contact_phone ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-zinc-500">
+                      Phone
+                    </div>
+                    <a
+                      href={`tel:${opp.contact_phone.replace(/\s+/g, "")}`}
+                      className="text-sm font-medium underline-offset-4 hover:underline"
+                    >
+                      {opp.contact_phone}
+                    </a>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </>
+        ) : null}
 
         <Separator />
 

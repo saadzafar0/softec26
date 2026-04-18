@@ -19,6 +19,9 @@ export const extractedSchema = z.object({
   funding_type: z.enum(["Full", "Partial", "None"]).nullable(),
   geo_scope: z.enum(["Local", "National", "International"]).nullable(),
   application_link: z.string().nullable(),
+  contact_email: z.string().nullable(),
+  contact_phone: z.string().nullable(),
+  contact_person: z.string().nullable(),
 });
 
 export type Extracted = z.infer<typeof extractedSchema>;
@@ -91,6 +94,27 @@ export async function extractFields(
         );
         result.application_link = found ? trimmed : null;
       }
+    }
+
+    // Contact email: must look like an email AND appear verbatim in body.
+    if (result.contact_email) {
+      const email = result.contact_email.trim().toLowerCase();
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      const appears = body.toLowerCase().includes(email);
+      result.contact_email = isEmail && appears ? email : null;
+    }
+    // Contact phone: keep only if it has at least 7 digits AND appears in body.
+    if (result.contact_phone) {
+      const phone = result.contact_phone.trim();
+      const digits = phone.replace(/\D/g, "");
+      const appears = body.includes(phone);
+      result.contact_phone = digits.length >= 7 && appears ? phone : null;
+    }
+    if (result.contact_person) {
+      const person = result.contact_person.trim();
+      result.contact_person = person.length > 1 && person.length < 120
+        ? person
+        : null;
     }
 
     return result;

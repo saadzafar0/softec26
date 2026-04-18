@@ -3,6 +3,8 @@ import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase";
 import { embedOne, pgvectorLiteral } from "@/lib/langchain";
 import { narrateProfile } from "@/lib/narrate";
+import { rescoreStudent } from "@/lib/rescore";
+import type { Student } from "@/types";
 
 export const runtime = "nodejs";
 
@@ -88,8 +90,9 @@ export async function POST(req: Request) {
   }
 
   const narrated = narrateProfile(student);
+  let vec: number[] | null = null;
   try {
-    const vec = await embedOne(narrated);
+    vec = await embedOne(narrated);
     await supabase.from("student_profile_embeddings").upsert(
       {
         student_id: student.id,
@@ -99,11 +102,6 @@ export async function POST(req: Request) {
       },
       { onConflict: "student_id" },
     );
-    // Edge case: profile updated -> invalidate cached semantic scores for rescoring
-    await supabase
-      .from("opportunities")
-      .update({ semantic_score: null, final_score: null })
-      .eq("student_id", student.id);
   } catch (err) {
     return NextResponse.json(
       {
@@ -115,5 +113,23 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ student_id: student.id, narrated });
+  // Profile changed -> recompute scores for all existing opportunities with
+  // the fresh profile vector. No LLM calls, just fit/urgency/value/semantic.
+  let rescored = 0;
+  try {
+    const items = await rescoreStudent(supabase, student as Student, {
+      includeHidden: true,
+      profileVec: vec,
+    });
+    rescored = items.length;
+  } catch (err) {
+    console.error("Auto-rescore after profile save failed", err);
+    // Don't fail the whole request; the user can click "Rescore all" manually.
+  }
+
+  return NextResponse.json({
+    student_id: student.id,
+    narrated,
+    rescored,
+  });
 }

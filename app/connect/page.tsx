@@ -1,8 +1,8 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { useStudentId } from "@/hooks/useStudent";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useStudent } from "@/hooks/useStudent";
 import {
   Card,
   CardContent,
@@ -13,9 +13,42 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+
+type ParsedEmail = {
+  subject: string | null;
+  sender: string | null;
+  body: string;
+};
+
+function parseBatchPaste(text: string): ParsedEmail[] {
+  if (!text.trim()) return [];
+  const blocks = text
+    .split(/^\s*-{3,}\s*$/m)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0);
+  return blocks
+    .map((block) => {
+      const lines = block.split(/\r?\n/);
+      let subject: string | null = null;
+      let sender: string | null = null;
+      let i = 0;
+      while (i < lines.length) {
+        const m = /^\s*(subject|from)\s*:\s*(.+?)\s*$/i.exec(lines[i]);
+        if (!m) break;
+        const k = m[1].toLowerCase();
+        const v = m[2];
+        if (k === "subject" && !subject) subject = v;
+        else if (k === "from" && !sender) sender = v;
+        i += 1;
+      }
+      if (i < lines.length && lines[i].trim() === "") i += 1;
+      const body = lines.slice(i).join("\n").trim();
+      return { subject, sender, body };
+    })
+    .filter((e) => e.body.length >= 20);
+}
 
 export default function ConnectPage() {
   return (
@@ -26,7 +59,9 @@ export default function ConnectPage() {
 }
 
 function ConnectInner() {
-  const { studentId, setStudentId } = useStudentId();
+  const router = useRouter();
+  const { studentId, isAuthenticated, hydrated, signIn, studentEmail } =
+    useStudent();
   const params = useSearchParams();
   const [syncing, setSyncing] = useState(false);
   type TraceItem = {
@@ -62,18 +97,23 @@ function ConnectInner() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (hydrated && !isAuthenticated) {
+      router.replace("/signin");
+    }
+  }, [hydrated, isAuthenticated, router]);
+
+  useEffect(() => {
     const sid = params.get("student_id");
     const connected = params.get("connected");
     const errParam = params.get("error");
-    if (sid && connected) {
-      setStudentId(sid);
+    if (sid && connected && studentEmail && sid !== studentId) {
+      signIn(sid, studentEmail);
     }
     if (errParam) setError(decodeURIComponent(errParam));
-  }, [params, setStudentId]);
+  }, [params, signIn, studentId, studentEmail]);
 
-  const [manualSubject, setManualSubject] = useState("");
-  const [manualSender, setManualSender] = useState("");
   const [manualBody, setManualBody] = useState("");
+  const parsedManualEmails = parseBatchPaste(manualBody);
 
   const startGmail = async () => {
     if (!studentId) {
@@ -228,8 +268,13 @@ function ConnectInner() {
       setError("Save your profile first on the Profile tab.");
       return;
     }
-    if (manualBody.trim().length < 20) {
-      setError("Email body is too short.");
+    const emails = parsedManualEmails;
+    if (emails.length === 0) {
+      setError("Paste at least one email body (20+ characters).");
+      return;
+    }
+    if (emails.length > 20) {
+      setError(`Too many emails (${emails.length}). Max 20 per paste.`);
       return;
     }
     setSyncing(true);
@@ -239,16 +284,7 @@ function ConnectInner() {
       const res = await fetch("/api/emails/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          student_id: studentId,
-          emails: [
-            {
-              subject: manualSubject || null,
-              sender: manualSender || null,
-              body: manualBody,
-            },
-          ],
-        }),
+        body: JSON.stringify({ student_id: studentId, emails }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -269,15 +305,13 @@ function ConnectInner() {
       <div className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Bring emails in</h1>
         <p className="max-w-2xl text-zinc-600 dark:text-zinc-400">
-          Connect Gmail to auto-fetch 15 recent opportunity emails, or paste one
-          in manually. Each email is cleaned, classified, extracted, scored, and
-          explained.
+          Gmail is already connected via sign-in. Sync 15 recent opportunity
+          emails, paste one manually, or re-connect if your session expires.
+          Each email is cleaned, classified, extracted, scored, and explained.
         </p>
-        {studentId ? (
-          <Badge tone="green">Student {studentId.slice(0, 8)}…</Badge>
-        ) : (
-          <Badge tone="red">No profile yet — save one first.</Badge>
-        )}
+        {studentEmail ? (
+          <Badge tone="green">Connected as {studentEmail}</Badge>
+        ) : null}
       </div>
 
       <Tabs defaultValue="gmail">
@@ -289,20 +323,22 @@ function ConnectInner() {
         <TabsContent value="gmail">
           <Card>
             <CardHeader>
-              <CardTitle>Connect Gmail (read-only)</CardTitle>
+              <CardTitle>Gmail (read-only)</CardTitle>
               <CardDescription>
                 We fetch up to 15 recent messages matching scholarship /
-                internship / fellowship keywords.
+                internship / fellowship keywords. Re-connect only if the sync
+                fails with a session expired error.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap items-center gap-3">
-              <Button onClick={startGmail}>Connect Gmail</Button>
               <Button
-                variant="outline"
                 onClick={syncGmail}
                 disabled={!studentId || syncing}
               >
                 {syncing ? "Syncing…" : "Sync 15 emails now"}
+              </Button>
+              <Button variant="outline" onClick={startGmail}>
+                Re-connect Gmail
               </Button>
               <Button
                 variant="ghost"
@@ -333,42 +369,59 @@ function ConnectInner() {
         <TabsContent value="manual">
           <Card>
             <CardHeader>
-              <CardTitle>Paste an email</CardTitle>
+              <CardTitle>Paste one or more emails</CardTitle>
               <CardDescription>
                 Fallback when Gmail isn’t available. The same pipeline runs.
+                Separate multiple emails with{" "}
+                <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] dark:bg-zinc-900">
+                  ---
+                </code>{" "}
+                on its own line. Optional headers{" "}
+                <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] dark:bg-zinc-900">
+                  Subject:
+                </code>{" "}
+                and{" "}
+                <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] dark:bg-zinc-900">
+                  From:
+                </code>{" "}
+                at the top of each block are picked up automatically.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Subject</Label>
-                  <Input
-                    value={manualSubject}
-                    onChange={(e) => setManualSubject(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Sender</Label>
-                  <Input
-                    value={manualSender}
-                    placeholder="Name &lt;address@example.org&gt;"
-                    onChange={(e) => setManualSender(e.target.value)}
-                  />
-                </div>
-              </div>
               <div className="space-y-1.5">
-                <Label>Body</Label>
+                <Label>Emails</Label>
                 <Textarea
-                  rows={10}
+                  rows={16}
                   value={manualBody}
                   onChange={(e) => setManualBody(e.target.value)}
-                  placeholder="Paste the full email body here…"
+                  placeholder={`Subject: Fulbright Foreign Student Program 2026
+From: scholarships@usefp.org
+
+The United States Educational Foundation in Pakistan is now accepting applications…
+
+---
+
+Subject: Summer Internship 2026 | Acme Corp
+From: careers@acme.com
+
+We are hiring BSCS interns for summer 2026…`}
                 />
               </div>
-              <div className="flex items-center gap-3">
-                <Button onClick={submitManual} disabled={syncing}>
-                  {syncing ? "Processing…" : "Ingest email"}
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  onClick={submitManual}
+                  disabled={syncing || parsedManualEmails.length === 0}
+                >
+                  {syncing
+                    ? "Processing…"
+                    : `Ingest ${parsedManualEmails.length || 0} email${parsedManualEmails.length === 1 ? "" : "s"}`}
                 </Button>
+                {parsedManualEmails.length > 0 ? (
+                  <Badge tone="muted">
+                    {parsedManualEmails.length} detected
+                    {parsedManualEmails.length > 20 ? " (max 20)" : ""}
+                  </Badge>
+                ) : null}
                 <Link
                   href="/dashboard"
                   className="text-sm font-medium underline-offset-4 hover:underline"
@@ -376,6 +429,29 @@ function ConnectInner() {
                   View dashboard →
                 </Link>
               </div>
+              {parsedManualEmails.length > 0 ? (
+                <ul className="divide-y rounded-md border text-sm dark:divide-zinc-800 dark:border-zinc-800">
+                  {parsedManualEmails.slice(0, 20).map((e, i) => (
+                    <li key={i} className="flex items-start gap-3 p-2.5">
+                      <span className="mt-0.5 w-6 text-right text-xs text-zinc-500">
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">
+                          {e.subject || (
+                            <span className="text-zinc-500">
+                              (no subject line)
+                            </span>
+                          )}
+                        </div>
+                        <div className="truncate text-xs text-zinc-500">
+                          {e.sender || "(no sender)"} · {e.body.length} chars
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>

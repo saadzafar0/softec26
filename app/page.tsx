@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useStudentId } from "@/hooks/useStudent";
+import { useRouter } from "next/navigation";
+import { useStudent } from "@/hooks/useStudent";
 import {
   Card,
   CardContent,
@@ -352,7 +353,14 @@ const COUNTRIES = [
 ];
 
 export default function ProfilePage() {
-  const { studentId, setStudentId } = useStudentId();
+  const router = useRouter();
+  const {
+    studentId,
+    studentEmail,
+    isAuthenticated,
+    hydrated,
+    signIn,
+  } = useStudent();
   const [form, setForm] = useState<ProfileForm>({
     email: "",
     degree: "BS",
@@ -373,6 +381,20 @@ export default function ProfilePage() {
   const [cgpaError, setCgpaError] = useState<string | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [interestSearch, setInterestSearch] = useState("");
+
+  useEffect(() => {
+    if (hydrated && !isAuthenticated) {
+      router.replace("/signin");
+    }
+  }, [hydrated, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (studentEmail) {
+      setForm((prev) =>
+        prev.email === studentEmail ? prev : { ...prev, email: studentEmail },
+      );
+    }
+  }, [studentEmail]);
 
   useEffect(() => {
     try {
@@ -554,8 +576,13 @@ export default function ProfilePage() {
       if (!res.ok) {
         setError(data.error ?? "Failed to save profile");
       } else {
-        setStudentId(data.student_id);
-        setMessage("Profile saved and embedded.");
+        signIn(data.student_id as string, payload.email);
+        const rescored = typeof data.rescored === "number" ? data.rescored : 0;
+        setMessage(
+          rescored > 0
+            ? `Profile saved. Rescored ${rescored} opportunity${rescored === 1 ? "" : "ies"}.`
+            : "Profile saved and embedded.",
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -574,8 +601,8 @@ export default function ProfilePage() {
           Tell us about your studies and goals. We narrate, embed, and use this
           to rank incoming opportunities by fit and urgency.
         </p>
-        {studentId ? (
-          <Badge tone="green">Signed in as {studentId.slice(0, 8)}…</Badge>
+        {studentEmail ? (
+          <Badge tone="green">Signed in as {studentEmail}</Badge>
         ) : null}
       </div>
 
@@ -588,12 +615,18 @@ export default function ProfilePage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="grid gap-5">
-            <Row>
+            <div className="grid gap-4 md:grid-cols-2">
               <Field label="Email" required>
                 <Input
                   required
                   type="email"
                   value={form.email}
+                  readOnly={Boolean(studentEmail)}
+                  className={
+                    studentEmail
+                      ? "cursor-not-allowed bg-zinc-50 dark:bg-zinc-900"
+                      : ""
+                  }
                   onChange={(e) =>
                     setForm({ ...form, email: e.target.value })
                   }
@@ -614,7 +647,7 @@ export default function ProfilePage() {
                   ))}
                 </Select>
               </Field>
-            </Row>
+            </div>
 
             <Row>
               <Field label="Degree">
@@ -698,135 +731,31 @@ export default function ProfilePage() {
             </Row>
 
             <Field label="Skills">
-              <div className="space-y-2">
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Top 10 common skills
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {FEATURED_SKILLS.map((skill) => {
-                    const selected = form.skills.includes(skill);
-                    return (
-                      <button
-                        type="button"
-                        key={skill}
-                        onClick={() => toggleSkill(skill)}
-                        className={
-                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
-                          (selected
-                            ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                            : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900")
-                        }
-                      >
-                        {skill}
-                      </button>
-                    );
-                  })}
-                </div>
-                <Input
-                  value={skillSearch}
-                  onChange={(e) => setSkillSearch(e.target.value)}
-                  placeholder="Search other skills"
-                />
-                {skillSearch.trim() ? (
-                  <div className="max-h-36 overflow-y-auto rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
-                    <div className="flex flex-wrap gap-2">
-                      {skillMatches.length ? (
-                        skillMatches.map((skill) => {
-                          const selected = form.skills.includes(skill);
-                          return (
-                            <button
-                              type="button"
-                              key={skill}
-                              onClick={() => toggleSkill(skill)}
-                              className={
-                                "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
-                                (selected
-                                  ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                                  : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900")
-                              }
-                            >
-                              {skill}
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          No matching skill found
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {form.skills.length} selected
-                </p>
-              </div>
+              <ChipPicker
+                featured={FEATURED_SKILLS}
+                featuredLabel="Top 10 common skills"
+                searchValue={skillSearch}
+                onSearchChange={setSkillSearch}
+                searchPlaceholder="Search other skills"
+                searchMatches={skillMatches}
+                selected={form.skills}
+                onToggle={toggleSkill}
+                emptyMatchLabel="No matching skill found"
+              />
             </Field>
 
             <Field label="Interests">
-              <div className="space-y-2">
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Top 10 common interests
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {FEATURED_INTERESTS.map((interest) => {
-                    const selected = form.interests.includes(interest);
-                    return (
-                      <button
-                        type="button"
-                        key={interest}
-                        onClick={() => toggleInterest(interest)}
-                        className={
-                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
-                          (selected
-                            ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                            : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900")
-                        }
-                      >
-                        {interest}
-                      </button>
-                    );
-                  })}
-                </div>
-                <Input
-                  value={interestSearch}
-                  onChange={(e) => setInterestSearch(e.target.value)}
-                  placeholder="Search other interests"
-                />
-                {interestSearch.trim() ? (
-                  <div className="max-h-36 overflow-y-auto rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
-                    <div className="flex flex-wrap gap-2">
-                      {interestMatches.length ? (
-                        interestMatches.map((interest) => {
-                          const selected = form.interests.includes(interest);
-                          return (
-                            <button
-                              type="button"
-                              key={interest}
-                              onClick={() => toggleInterest(interest)}
-                              className={
-                                "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
-                                (selected
-                                  ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                                  : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900")
-                              }
-                            >
-                              {interest}
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          No matching interest found
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {form.interests.length} selected
-                </p>
-              </div>
+              <ChipPicker
+                featured={FEATURED_INTERESTS}
+                featuredLabel="Top 10 common interests"
+                searchValue={interestSearch}
+                onSearchChange={setInterestSearch}
+                searchPlaceholder="Search other interests"
+                searchMatches={interestMatches}
+                selected={form.interests}
+                onToggle={toggleInterest}
+                emptyMatchLabel="No matching interest found"
+              />
             </Field>
 
             <div className="space-y-2">
@@ -873,7 +802,7 @@ export default function ProfilePage() {
                   className="text-sm font-medium text-zinc-600 underline-offset-4 hover:text-blue-600 hover:underline dark:text-zinc-400 dark:hover:text-blue-400"
                   href="/connect"
                 >
-                  Next: connect Gmail →
+                  Next: open inbox →
                 </Link>
               ) : null}
               {message ? (
@@ -910,6 +839,150 @@ function Field({
         {required ? <span className="ml-0.5 text-red-500">*</span> : null}
       </Label>
       {children}
+    </div>
+  );
+}
+
+function Chip({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
+        (selected
+          ? "border-zinc-900 bg-zinc-900 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+          : "border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900")
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+function SelectedChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove: () => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-zinc-900 bg-zinc-900 py-1 pl-3 pr-1 text-xs font-medium text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-900">
+      <span>{label}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Remove ${label}`}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50 dark:text-zinc-500 dark:hover:bg-zinc-200 dark:hover:text-zinc-900"
+      >
+        <svg
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          className="h-3 w-3"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+        >
+          <path d="M5 5l10 10M15 5L5 15" />
+        </svg>
+      </button>
+    </span>
+  );
+}
+
+function ChipPicker({
+  featured,
+  featuredLabel,
+  searchValue,
+  onSearchChange,
+  searchPlaceholder,
+  searchMatches,
+  selected,
+  onToggle,
+  emptyMatchLabel,
+}: {
+  featured: string[];
+  featuredLabel: string;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  searchPlaceholder: string;
+  searchMatches: string[];
+  selected: string[];
+  onToggle: (item: string) => void;
+  emptyMatchLabel: string;
+}) {
+  return (
+    <div className="space-y-3">
+      {selected.length > 0 ? (
+        <div className="rounded-md border border-zinc-200 bg-zinc-50/50 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              Selected ({selected.length})
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {selected.map((item) => (
+              <SelectedChip
+                key={item}
+                label={item}
+                onRemove={() => onToggle(item)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="space-y-2">
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          {featuredLabel}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {featured.map((item) => (
+            <Chip
+              key={item}
+              label={item}
+              selected={selected.includes(item)}
+              onClick={() => onToggle(item)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <Input
+        value={searchValue}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder={searchPlaceholder}
+      />
+      {searchValue.trim() ? (
+        <div className="max-h-36 overflow-y-auto rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+          <div className="flex flex-wrap gap-2">
+            {searchMatches.length ? (
+              searchMatches.map((item) => (
+                <Chip
+                  key={item}
+                  label={item}
+                  selected={selected.includes(item)}
+                  onClick={() => onToggle(item)}
+                />
+              ))
+            ) : (
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                {emptyMatchLabel}
+              </span>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

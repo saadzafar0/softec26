@@ -1,28 +1,33 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
+import { randomUUID } from "crypto";
 import { buildAuthUrl } from "@/lib/gmail";
 
 export const runtime = "nodejs";
 
-const startSchema = z.object({ student_id: z.string().uuid() });
-
-export async function POST(req: Request) {
-  let json: unknown;
+// Sign in / connect Gmail — same OAuth flow.
+// The callback finds-or-creates the student by email, so we do not need
+// the student_id here. State is used only as a CSRF token.
+export async function POST(_req: Request) {
   try {
-    json = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-  const parsed = startSchema.safeParse(json);
-  if (!parsed.success) {
+    const state = randomUUID();
+    const url = buildAuthUrl(state);
+    return NextResponse.json({ url });
+  } catch (err) {
     return NextResponse.json(
-      { error: "student_id required" },
-      { status: 400 },
+      {
+        error: "OAuth not configured",
+        details: err instanceof Error ? err.message : String(err),
+      },
+      { status: 500 },
     );
   }
+}
+
+export async function GET(_req: Request) {
   try {
-    const url = buildAuthUrl(parsed.data.student_id);
-    return NextResponse.json({ url });
+    const state = randomUUID();
+    const url = buildAuthUrl(state);
+    return NextResponse.redirect(url);
   } catch (err) {
     return NextResponse.json(
       {
