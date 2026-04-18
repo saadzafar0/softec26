@@ -11,15 +11,34 @@ export function daysUntil(deadline: string | null): number | null {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
-export function urgencyScore(deadline: string | null): number {
+const ROLLING_OPP_TYPES = new Set([
+  "internship",
+  "mentorship",
+  "mentorship program",
+  "research",
+  "research program",
+  "research assistantship",
+  "job",
+  "position",
+]);
+
+export function urgencyScore(
+  deadline: string | null,
+  oppType: string | null = null,
+): number {
   const days = daysUntil(deadline);
-  if (days === null) return 0.3;
+  if (days === null) {
+    // No deadline is normal for rolling-admission opportunities (internships,
+    // mentorships, research). Don't penalize them as heavily as a missed date.
+    if (oppType && ROLLING_OPP_TYPES.has(oppType.toLowerCase())) return 0.55;
+    return 0.35;
+  }
   if (days < 0) return 0;
   if (days <= 3) return 1.0;
-  if (days <= 7) return 0.8;
-  if (days <= 14) return 0.6;
-  if (days <= 30) return 0.4;
-  return 0.2;
+  if (days <= 7) return 0.85;
+  if (days <= 14) return 0.7;
+  if (days <= 30) return 0.5;
+  return 0.3;
 }
 
 export function urgencyFlag(deadline: string | null): UrgencyFlag {
@@ -41,26 +60,20 @@ function jaccard(a: string[], b: string[]): number {
   return union === 0 ? 0 : inter / union;
 }
 
-const DEGREE_RANK: Record<string, number> = {
-  BS: 1,
-  BSc: 1,
-  Bachelors: 1,
-  Bachelor: 1,
-  MS: 2,
-  MSc: 2,
-  Masters: 2,
-  Master: 2,
-  MBA: 2,
-  PhD: 3,
-  Doctorate: 3,
-};
+// Ordered by specificity: check longer keys first so "MSc" wins over "MS"
+// inside "Masters of Science", etc.
+const DEGREE_RANK: [RegExp, number][] = [
+  [/\bphd\b|\bph\.d\b|\bdoctor(ate|al)\b/i, 3],
+  [/\bmasters?\b|\bm\.?sc\b|\bm\.?s\b|\bm\.?a\b|\bmba\b|\bgraduate\b/i, 2],
+  [/\bbachelors?\b|\bb\.?sc\b|\bb\.?s\b|\bb\.?a\b|\bundergraduate\b/i, 1],
+];
 
 function degreeRank(d: string | null): number | null {
   if (!d) return null;
-  const key = Object.keys(DEGREE_RANK).find((k) =>
-    d.toLowerCase().includes(k.toLowerCase()),
-  );
-  return key ? (DEGREE_RANK[key] ?? null) : null;
+  for (const [rx, rank] of DEGREE_RANK) {
+    if (rx.test(d)) return rank;
+  }
+  return null;
 }
 
 export function profileFitScore(
@@ -113,19 +126,36 @@ export function valueScore(
   opp: Pick<Extracted, "funding_type" | "geo_scope">,
   prestige: number | null,
 ): number {
-  const prestigeNorm = prestige ? prestige / 10 : 0.3;
-  let funding = 0.3;
+  // Unknown orgs (not in the seeded org_knowledge) used to get prestige=0,
+  // which heavily penalized perfectly reasonable local internships just for
+  // not being famous. Baseline unknowns at 0.5.
+  const prestigeNorm = prestige ? prestige / 10 : 0.5;
+  let funding = 0.5; // unknown funding_type is neutral, not penalized
   if (opp.funding_type === "Full") funding = 1;
-  else if (opp.funding_type === "Partial") funding = 0.6;
-  else if (opp.funding_type === "None") funding = 0.2;
-  let geo = 0.5;
+  else if (opp.funding_type === "Partial") funding = 0.7;
+  else if (opp.funding_type === "None") funding = 0.35;
+  let geo = 0.6;
   if (opp.geo_scope && student.location_pref) {
     const sp = student.location_pref.toLowerCase();
     const gs = opp.geo_scope.toLowerCase();
     if (sp.includes(gs) || gs.includes(sp)) geo = 1;
-    else if (sp.includes("international") || gs.includes("international")) geo = 0.7;
+    else if (sp.includes("international") || gs.includes("international")) geo = 0.75;
   }
-  return prestigeNorm * 0.5 + funding * 0.3 + geo * 0.2;
+  return prestigeNorm * 0.4 + funding * 0.35 + geo * 0.25;
+}
+
+/**
+ * Stretch raw cosine similarity into the full [0,1] band.
+ * text-embedding-3-small rarely produces cosines above ~0.65 for non-duplicate
+ * text, so the "natural" high-water mark is around 0.6. We remap [0.2, 0.6]
+ * linearly into [0, 1] and clamp outside.
+ */
+export function stretchSemantic(raw: number | null): number | null {
+  if (raw === null) return null;
+  const LO = 0.2;
+  const HI = 0.6;
+  const stretched = (raw - LO) / (HI - LO);
+  return Math.max(0, Math.min(1, stretched));
 }
 
 export function blendScores(input: {
@@ -134,10 +164,15 @@ export function blendScores(input: {
   value: number;
   semantic: number | null;
 }): number {
+  // Deterministic blend — value is weighted highest because funding + prestige +
+  // geo-alignment is what students actually care about when picking what to chase.
   const deterministic =
-    input.fit * 0.4 + input.urgency * 0.35 + input.value * 0.25;
+    input.fit * 0.3 + input.urgency * 0.3 + input.value * 0.4;
   if (input.semantic === null) return deterministic;
-  return deterministic * 0.6 + input.semantic * 0.4;
+  const semanticStretched = stretchSemantic(input.semantic) ?? 0;
+  // Lower semantic weight vs. the old 0.4 — embedding cosines are noisy at this
+  // scale and shouldn't drag down an otherwise strong deterministic match.
+  return deterministic * 0.7 + semanticStretched * 0.3;
 }
 
 export function isEligible(
