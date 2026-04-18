@@ -10,8 +10,8 @@ const profileSchema = z.object({
   email: z.string().email(),
   degree: z.string().nullable().optional(),
   program: z.string().nullable().optional(),
-  semester: z.number().int().min(1).max(12).nullable().optional(),
-  cgpa: z.number().min(0).max(4.5).nullable().optional(),
+  semester: z.number().int().min(1).max(8).nullable().optional(),
+  cgpa: z.number().min(0).max(4).nullable().optional(),
   skills: z.array(z.string()).default([]),
   interests: z.array(z.string()).default([]),
   preferred_types: z.array(z.string()).default([]),
@@ -20,6 +20,38 @@ const profileSchema = z.object({
   nationality: z.string().nullable().optional(),
   graduation_date: z.string().nullable().optional(),
 });
+
+const getProfileSchema = z.object({
+  student_id: z.string().uuid(),
+});
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const parsed = getProfileSchema.safeParse({
+    student_id: searchParams.get("student_id"),
+  });
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid student_id" }, { status: 400 });
+  }
+
+  const supabase = createServerSupabase();
+  const { data, error } = await supabase
+    .from("students")
+    .select(
+      "id, email, degree, program, semester, cgpa, skills, interests, preferred_types, financial_need, location_pref, nationality, graduation_date",
+    )
+    .eq("id", parsed.data.student_id)
+    .single();
+
+  if (error || !data) {
+    return NextResponse.json(
+      { error: "Profile not found", details: error?.message },
+      { status: 404 },
+    );
+  }
+
+  return NextResponse.json({ profile: data });
+}
 
 export async function POST(req: Request) {
   let json: unknown;
