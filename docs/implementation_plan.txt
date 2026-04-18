@@ -1,16 +1,15 @@
 Implementation Plan
 Step 1 — Project Setup
 
-Supabase project → run schema SQL
-ChromaDB local instance (persistent mode, saved to disk)
-FastAPI backend, React frontend
-Seed org_knowledge table with 20–30 common orgs (HEC, Fulbright, DAAD, Google, etc.) and embed them into ChromaDB org_knowledge collection immediately
+Supabase project → run schema SQL (pgvector extension enabled, embedding tables + HNSW indexes + `match_*` RPCs created)
+Next.js 16 (App Router) for the app; all server logic in API routes and `lib/*`
+Seed org_knowledge table with 20–30 common orgs (HEC, Fulbright, DAAD, Google, etc.) and embed their descriptions into the Supabase `org_knowledge_embeddings` table (pgvector) immediately
 
 
 Step 2 — Student Profile
 
 Build form → POST to /profile → insert into students
-Narrate the profile into a sentence → embed → upsert into ChromaDB student_profiles
+Narrate the profile into a sentence → embed → upsert into Supabase `student_profile_embeddings` (pgvector, one row per student)
 If Gmail: trigger OAuth flow → store gmail_refresh_token in students
 
 
@@ -35,7 +34,7 @@ Save cleaned_body back to raw_emails
 
 Step 5 — Classification
 
-Embed cleaned_body → query ChromaDB opportunity_chunks for top-5 similar (cold start: skip this, use rules only)
+Embed cleaned_body → pgvector similarity search against `opportunity_chunks` for top-5 similar (cold start: skip this, use rules only)
 Run rule-based signals (deadline keywords, opp keywords, CTA present)
 Combine rule score + semantic similarity → classify
 Insert row into opportunities with is_opportunity and confidence
@@ -51,7 +50,7 @@ Check deadline vs today → if past, set status = 'expired'
 
 Step 7 — Org Knowledge Lookup
 
-Take org_name from extracted fields → query ChromaDB org_knowledge collection
+Take org_name from extracted fields → embed it → call the `match_org_knowledge` Supabase RPC against `org_knowledge_embeddings` (pgvector)
 Retrieve top-1 match → use prestige_score and known_funding_type to fill gaps or validate extracted fields
 If funding_type not in email but org is known as fully funded → fill it in, flag as inferred
 
@@ -66,13 +65,13 @@ Stop processing ineligible ones
 Step 9 — Embedding Opportunities
 
 For each active opportunity, chunk it into 5 chunks (header, eligibility, benefits, documents, deadline)
-Embed each chunk → insert into ChromaDB opportunity_chunks with metadata
+Embed each chunk → insert into the Supabase `opportunity_chunks` table (pgvector) with metadata (opportunity_id, chunk_type)
 
 
 Step 10 — Semantic Scoring
 
-Fetch student profile vector from ChromaDB student_profiles
-Query opportunity_chunks filtered by student_id → get similarity scores per chunk
+Fetch student profile vector from Supabase `student_profile_embeddings`
+Call the `match_opportunity_chunks` RPC filtered by student_id → get similarity scores per chunk (pgvector cosine)
 Average across chunks of same opportunity → semantic_score
 Update opportunities.semantic_score
 
@@ -88,7 +87,7 @@ Update opportunities with all scores
 
 Step 12 — Explanation + Checklist Generation
 
-For each top-N opportunity, LLM call with: extracted fields + scores + org context retrieved from ChromaDB
+For each top-N opportunity, LLM call with: extracted fields + scores + org context retrieved from Supabase `org_knowledge`
 LLM outputs: explanation, action_checklist[], urgency_flag
 Update opportunities row
 
@@ -113,12 +112,17 @@ Filter bar: by type, by urgency, show ineligible/expired toggle
 Data Flow Summary
 Gmail / Paste
   → raw_emails (Supabase)
-  → clean → classify (rules + ChromaDB similarity)
+  → clean → classify (rules + pgvector similarity on opportunity_chunks)
   → extract fields (LLM) → opportunities (Supabase)
-  → org lookup (ChromaDB org_knowledge)
+  → org lookup (pgvector match_org_knowledge on org_knowledge_embeddings)
   → eligibility filter
-  → embed chunks → ChromaDB opportunity_chunks
-  → semantic score (ChromaDB profile vs chunks)
+  → embed chunks → opportunity_chunks (Supabase / pgvector)
+  → semantic score (student_profile_embeddings vs opportunity_chunks, cosine similarity)
   → deterministic score (pure math)
   → blend scores → explanation (LLM)
-  → final ranked list → frontendSonnet 4.6Adaptive
+  → final ranked list → frontend
+
+Storage Summary
+- Relational tables: Supabase Postgres (students, raw_emails, opportunities, org_knowledge, gmail_sync_log)
+- Vector storage: Supabase pgvector (student_profile_embeddings, opportunity_chunks, org_knowledge_embeddings)
+- LLM + embeddings: GitHub Models (`openai/gpt-4.1-mini`, `openai/text-embedding-3-small`)

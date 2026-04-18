@@ -96,25 +96,31 @@ function headerValue(
   return match?.value ?? null;
 }
 
+export const GMAIL_MAX_RESULTS = 15;
+
 export async function fetchRecentEmails(
   refreshToken: string,
-  maxResults = 15,
+  maxResults: number = GMAIL_MAX_RESULTS,
 ): Promise<FetchedEmail[]> {
   const auth = clientForRefreshToken(refreshToken);
   const gmail = google.gmail({ version: "v1", auth });
 
+  const cap = Math.max(1, Math.min(maxResults, 15));
+
   const list = await gmail.users.messages.list({
     userId: "me",
     q: GMAIL_QUERY,
-    maxResults,
+    maxResults: cap,
   });
 
   const ids = (list.data.messages ?? [])
     .map((m) => m.id)
-    .filter((x): x is string => Boolean(x));
+    .filter((x): x is string => Boolean(x))
+    .slice(0, cap);
 
   const results: FetchedEmail[] = [];
   for (const id of ids) {
+    if (results.length >= cap) break;
     const msg = await gmail.users.messages.get({
       userId: "me",
       id,

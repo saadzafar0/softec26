@@ -1,11 +1,10 @@
 ## Phase 1 — Foundation
 **Goal: Everything runs, nothing breaks**
 
-- Supabase project up, schema deployed
+- Supabase project up, schema deployed (pgvector enabled, HNSW indexes on embedding tables)
 - NEXTJS changes
-- ChromaDB initialized in persistent mode
-- Seed `org_knowledge` table + embed all org entries into ChromaDB
-- Environment variables set (Supabase URL/key, OpenAI key, Google OAuth creds)
+- Seed `org_knowledge` table + embed all org descriptions into `org_knowledge_embeddings` (pgvector)
+- Environment variables set (Supabase URL/anon/service-role keys, GitHub Models token, Google OAuth creds)
 
 ---
 
@@ -13,7 +12,7 @@
 **Goal: A student can create a profile and connect Gmail**
 
 - Profile form built → POST `/profile` → inserts into `students`
-- Profile narrated into text → embedded → stored in ChromaDB `student_profiles`
+- Profile narrated into text → embedded → upserted into Supabase `student_profile_embeddings` (pgvector)
 - Gmail OAuth flow → refresh token saved to `students`
 
 ---
@@ -33,7 +32,7 @@
 - Classifier: rule-based signals → LLM confirmation → `is_opportunity` + `confidence` saved
 - Field extractor: LLM call → structured JSON → update `opportunities` row
 - Expired check: deadline vs today → set `status = 'expired'` immediately
-- Org lookup: query ChromaDB `org_knowledge` → fill gaps in extracted fields
+- Org lookup: pgvector similarity search via `match_org_knowledge` RPC against `org_knowledge_embeddings` → fill gaps in extracted fields
 
 ---
 
@@ -41,7 +40,7 @@
 **Goal: Every opportunity has a final score**
 
 - Eligibility hard filter → mark ineligible, stop processing those
-- Embed opportunity chunks → store in ChromaDB `opportunity_chunks`
+- Embed 5 opportunity chunks per opportunity → insert into Supabase `opportunity_chunks` (pgvector)
 - Semantic score: profile vector vs opportunity chunks → cosine similarity
 - Deterministic score: urgency + fit + value formulas
 - Blend both → `final_score` saved to `opportunities`
