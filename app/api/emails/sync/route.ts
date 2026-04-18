@@ -62,6 +62,7 @@ export async function POST(req: Request) {
         { status: 401 },
       );
     }
+    console.error("[emails/sync] Gmail fetch failed:", err);
     return NextResponse.json(
       {
         error: "Gmail fetch failed",
@@ -70,6 +71,28 @@ export async function POST(req: Request) {
       { status: 502 },
     );
   }
+
+  type Trace = {
+    gmail_message_id: string;
+    subject: string | null;
+    sender: string | null;
+    ingest: "new" | "dup_gmail_id" | "dup_cleaned_hash" | "insert_failed";
+    pipeline:
+      | "skipped"
+      | "noise"
+      | "extract_failed"
+      | "active"
+      | "expired"
+      | "ineligible"
+      | "error"
+      | "empty"
+      | "missing"
+      | "no_student";
+    raw_email_id?: string;
+    opportunity_id?: string;
+  };
+
+  const traces: Trace[] = [];
 
   const rawRows = emails.map((m) => {
     const cleaned = cleanEmailBody(m.rawBody);
@@ -87,50 +110,78 @@ export async function POST(req: Request) {
     };
   });
 
-  const insertedIds: string[] = [];
   for (const row of rawRows) {
+    const trace: Trace = {
+      gmail_message_id: row.gmail_message_id,
+      subject: row.subject,
+      sender: row.sender,
+      ingest: "new",
+      pipeline: "skipped",
+    };
+
     const { data: existing } = await supabase
       .from("raw_emails")
       .select("id")
       .eq("student_id", row.student_id)
       .eq("gmail_message_id", row.gmail_message_id)
       .maybeSingle();
-    if (existing?.id) continue;
+    if (existing?.id) {
+      trace.ingest = "dup_gmail_id";
+      trace.raw_email_id = existing.id as string;
+      traces.push(trace);
+      continue;
+    }
+
     const { data: dup } = await supabase
       .from("raw_emails")
       .select("id")
       .eq("student_id", row.student_id)
       .eq("cleaned_hash", row.cleaned_hash)
       .maybeSingle();
-    if (dup?.id) continue;
+    if (dup?.id) {
+      trace.ingest = "dup_cleaned_hash";
+      trace.raw_email_id = dup.id as string;
+      traces.push(trace);
+      continue;
+    }
+
     const { data: ins, error: insErr } = await supabase
       .from("raw_emails")
       .insert(row)
       .select("id")
       .single();
-    if (!insErr && ins) insertedIds.push(ins.id as string);
+    if (insErr || !ins) {
+      trace.ingest = "insert_failed";
+      traces.push(trace);
+      continue;
+    }
+    trace.raw_email_id = ins.id as string;
+
+    const res = await processRawEmail(ins.id as string);
+    trace.pipeline = res.status as Trace["pipeline"];
+    if (res.opportunity_id) trace.opportunity_id = res.opportunity_id;
+    traces.push(trace);
   }
+
+  const oppCount = traces.filter((t) => t.pipeline === "active").length;
 
   await supabase.from("gmail_sync_log").insert({
     student_id: student.id,
     emails_fetched: rawRows.length,
-    opportunities_found: 0,
+    opportunities_found: oppCount,
     last_message_id: rawRows[rawRows.length - 1]?.gmail_message_id ?? null,
   });
-
-  let oppCount = 0;
-  for (const id of insertedIds) {
-    const res = await processRawEmail(id);
-    if (res.status === "active") oppCount += 1;
-  }
 
   if (oppCount > 0) {
     await runExplanations(student.id, 10);
   }
 
+  const newEmails = traces.filter((t) => t.ingest === "new").length;
+
   return NextResponse.json({
     emails_fetched: rawRows.length,
-    new_emails: insertedIds.length,
+    new_emails: newEmails,
     opportunities_active: oppCount,
+    items: traces,
   });
 }
