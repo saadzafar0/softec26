@@ -93,27 +93,39 @@ gmail_sync_log (
 
 
 
-ChromaDB Collections
-Collection 1: opportunity_chunks
-embedding: vector of chunk text
-metadata: {
-  opportunity_id,
-  student_id,
-  chunk_type: 'eligibility' | 'benefits' | 'header' | 'documents' | 'deadline',
-  deadline_date,
-  opp_type,
-  final_score
-}
-Collection 2: student_profiles
-embedding: vector of narrated profile text
-metadata: {
-  student_id,
-  updated_at
-}
-Collection 3: org_knowledge
-embedding: vector of org description
-metadata: {
-  org_knowledge_id,
-  org_name,
-  prestige_score
-}
+Supabase pgvector tables
+-- Requires: create extension if not exists vector;
+-- All embeddings are 1536-dim (openai/text-embedding-3-small via GitHub Models).
+-- Each table has an HNSW index with vector_cosine_ops for similarity search.
+
+opportunity_chunks (
+  id uuid PK,
+  opportunity_id uuid FK -> opportunities(id) on delete cascade,
+  student_id uuid FK -> students(id) on delete cascade,
+  chunk_type text check (chunk_type in ('header','eligibility','benefits','documents','deadline')),
+  chunk_text text,
+  embedding vector(1536),
+  deadline_date date,
+  opp_type text,
+  final_score float,
+  created_at timestamp default now()
+)
+
+student_profile_embeddings (
+  student_id uuid PK FK -> students(id) on delete cascade,
+  narrated_text text,
+  embedding vector(1536),
+  updated_at timestamp default now()
+)
+
+org_knowledge_embeddings (
+  org_knowledge_id uuid PK FK -> org_knowledge(id) on delete cascade,
+  embedding vector(1536),
+  updated_at timestamp default now()
+)
+
+RPCs (SQL functions for similarity search)
+- match_opportunity_chunks(query_embedding vector, match_student_id uuid, match_count int)
+    returns top-N chunks for a given student_id, ranked by 1 - (embedding <=> query_embedding)
+- match_org_knowledge(query_embedding vector, match_count int)
+    returns top-N org rows joined with org_knowledge, ranked by cosine similarity
