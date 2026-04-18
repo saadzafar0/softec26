@@ -126,6 +126,51 @@ function ConnectInner() {
     }
   };
 
+  const reprocessAll = async () => {
+    if (!studentId) return;
+    setSyncing(true);
+    setSummary(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/emails/reprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId, only_noise: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Reprocess failed");
+        return;
+      }
+      // Shape-shift reprocess response into the trace-style summary the UI renders.
+      setSummary({
+        emails_fetched: data.reprocessed,
+        new_emails: 0,
+        opportunities_active: data.opportunities_active,
+        items: (data.items ?? []).map(
+          (i: {
+            raw_email_id: string;
+            subject: string | null;
+            sender: string | null;
+            status: string;
+            opportunity_id?: string;
+          }) => ({
+            gmail_message_id: i.raw_email_id,
+            subject: i.subject,
+            sender: i.sender,
+            ingest: "new" as const,
+            pipeline: i.status as TraceItem["pipeline"],
+            opportunity_id: i.opportunity_id,
+          }),
+        ),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const submitManual = async () => {
     if (!studentId) {
       setError("Save your profile first on the Profile tab.");
@@ -206,6 +251,14 @@ function ConnectInner() {
                 disabled={!studentId || syncing}
               >
                 {syncing ? "Syncing…" : "Sync 15 emails now"}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={reprocessAll}
+                disabled={!studentId || syncing}
+                title="Re-run the pipeline on all previously-fetched emails currently marked as noise. Useful after tuning the classifier."
+              >
+                {syncing ? "Processing…" : "Reprocess stored emails"}
               </Button>
               <Link
                 href="/dashboard"
@@ -308,7 +361,7 @@ function ConnectInner() {
             </div>
 
             {summary.items && summary.items.length > 0 ? (
-              <TraceTable items={summary.items} />
+              <TraceSection items={summary.items} />
             ) : null}
           </CardContent>
         </Card>
@@ -325,17 +378,55 @@ function ConnectInner() {
   );
 }
 
+type TraceRow = {
+  gmail_message_id: string;
+  subject: string | null;
+  sender: string | null;
+  ingest: string;
+  pipeline: string;
+  opportunity_id?: string;
+};
+
+function TraceSection({ items }: { items: TraceRow[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const hiddenStatuses = new Set(["noise", "extract_failed", "skipped"]);
+  const filtered = showAll
+    ? items
+    : items.filter((i) => !hiddenStatuses.has(i.pipeline));
+  const hiddenCount = items.length - filtered.length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+        <span>
+          Showing <b>{filtered.length}</b> of {items.length}
+          {hiddenCount > 0 && !showAll
+            ? ` — hiding ${hiddenCount} non-opportunity rows`
+            : ""}
+        </span>
+        {hiddenCount > 0 || showAll ? (
+          <button
+            type="button"
+            onClick={() => setShowAll((v) => !v)}
+            className="text-xs font-medium underline-offset-4 hover:underline"
+          >
+            {showAll ? "Hide non-opportunities" : "Show all"}
+          </button>
+        ) : null}
+      </div>
+      {filtered.length > 0 ? <TraceTable items={filtered} /> : (
+        <div className="rounded-md border border-dashed border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
+          No opportunities matched this time.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TraceTable({
   items,
 }: {
-  items: {
-    gmail_message_id: string;
-    subject: string | null;
-    sender: string | null;
-    ingest: string;
-    pipeline: string;
-    opportunity_id?: string;
-  }[];
+  items: TraceRow[];
 }) {
   const ingestTone = (s: string) => {
     if (s === "new") return "green" as const;

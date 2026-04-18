@@ -63,7 +63,7 @@ export async function processRawEmail(
   if (!student) return { status: "no_student" };
   const profile = student as Student;
 
-  const classification = await classify(cleaned);
+  const classification = await classify(row.subject, row.sender, cleaned);
   if (!classification.is_opportunity) {
     const { data: oppNoise, error: noiseErr } = await supabase
       .from("opportunities")
@@ -115,7 +115,7 @@ export async function processRawEmail(
   if (expired) status = "expired";
   else if (!eligible) status = "ineligible";
 
-  const u_score = urgencyScore(enriched.deadline);
+  const u_score = urgencyScore(enriched.deadline, enriched.opp_type);
   const fit = profileFitScore(profile, enriched);
   const value = valueScore(profile, enriched, prestige);
 
