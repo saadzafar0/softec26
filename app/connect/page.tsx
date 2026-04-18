@@ -29,12 +29,35 @@ function ConnectInner() {
   const { studentId, setStudentId } = useStudentId();
   const params = useSearchParams();
   const [syncing, setSyncing] = useState(false);
+  type TraceItem = {
+    gmail_message_id: string;
+    subject: string | null;
+    sender: string | null;
+    ingest:
+      | "new"
+      | "dup_gmail_id"
+      | "dup_cleaned_hash"
+      | "insert_failed";
+    pipeline:
+      | "skipped"
+      | "noise"
+      | "extract_failed"
+      | "active"
+      | "expired"
+      | "ineligible"
+      | "error"
+      | "empty"
+      | "missing"
+      | "no_student";
+    opportunity_id?: string;
+  };
   const [summary, setSummary] = useState<{
     emails_fetched?: number;
     new_emails?: number;
     inserted?: number;
     skipped_duplicates?: number;
     opportunities_active?: number;
+    items?: TraceItem[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -247,32 +270,45 @@ function ConnectInner() {
 
       {summary ? (
         <Card>
-          <CardContent className="flex flex-wrap gap-4 p-4 text-sm">
-            {"emails_fetched" in summary ? (
-              <span>
-                Fetched <b>{summary.emails_fetched}</b>
-              </span>
-            ) : null}
-            {"new_emails" in summary ? (
-              <span>
-                New <b>{summary.new_emails}</b>
-              </span>
-            ) : null}
-            {"inserted" in summary ? (
-              <span>
-                Inserted <b>{summary.inserted}</b>
-              </span>
-            ) : null}
-            {"skipped_duplicates" in summary ? (
-              <span>
-                Duplicates skipped <b>{summary.skipped_duplicates}</b>
-              </span>
-            ) : null}
-            {"opportunities_active" in summary ? (
-              <span>
-                New active opportunities{" "}
-                <b>{summary.opportunities_active}</b>
-              </span>
+          <CardHeader>
+            <CardTitle>Last sync</CardTitle>
+            <CardDescription>
+              What happened to each fetched email as it moved through the
+              pipeline.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-4 text-sm">
+              {"emails_fetched" in summary ? (
+                <span>
+                  Fetched <b>{summary.emails_fetched}</b>
+                </span>
+              ) : null}
+              {"new_emails" in summary ? (
+                <span>
+                  New <b>{summary.new_emails}</b>
+                </span>
+              ) : null}
+              {"inserted" in summary ? (
+                <span>
+                  Inserted <b>{summary.inserted}</b>
+                </span>
+              ) : null}
+              {"skipped_duplicates" in summary ? (
+                <span>
+                  Duplicates skipped <b>{summary.skipped_duplicates}</b>
+                </span>
+              ) : null}
+              {"opportunities_active" in summary ? (
+                <span>
+                  New active opportunities{" "}
+                  <b>{summary.opportunities_active}</b>
+                </span>
+              ) : null}
+            </div>
+
+            {summary.items && summary.items.length > 0 ? (
+              <TraceTable items={summary.items} />
             ) : null}
           </CardContent>
         </Card>
@@ -285,6 +321,83 @@ function ConnectInner() {
           </CardContent>
         </Card>
       ) : null}
+    </div>
+  );
+}
+
+function TraceTable({
+  items,
+}: {
+  items: {
+    gmail_message_id: string;
+    subject: string | null;
+    sender: string | null;
+    ingest: string;
+    pipeline: string;
+    opportunity_id?: string;
+  }[];
+}) {
+  const ingestTone = (s: string) => {
+    if (s === "new") return "green" as const;
+    if (s.startsWith("dup")) return "yellow" as const;
+    return "red" as const;
+  };
+  const pipelineTone = (s: string) => {
+    if (s === "active") return "green" as const;
+    if (s === "expired" || s === "ineligible") return "yellow" as const;
+    if (s === "skipped") return "default" as const;
+    if (s === "noise") return "default" as const;
+    return "red" as const;
+  };
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+          <tr>
+            <th className="px-3 py-2">#</th>
+            <th className="px-3 py-2">Subject</th>
+            <th className="px-3 py-2">Sender</th>
+            <th className="px-3 py-2">Ingest</th>
+            <th className="px-3 py-2">Pipeline</th>
+            <th className="px-3 py-2">Opportunity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, i) => (
+            <tr
+              key={item.gmail_message_id}
+              className="border-t border-zinc-200 align-top dark:border-zinc-800"
+            >
+              <td className="px-3 py-2 text-zinc-500">{i + 1}</td>
+              <td className="max-w-[22rem] truncate px-3 py-2" title={item.subject ?? ""}>
+                {item.subject || <span className="text-zinc-400">(no subject)</span>}
+              </td>
+              <td className="max-w-[18rem] truncate px-3 py-2 text-zinc-600 dark:text-zinc-400" title={item.sender ?? ""}>
+                {item.sender || "—"}
+              </td>
+              <td className="px-3 py-2">
+                <Badge tone={ingestTone(item.ingest)}>{item.ingest}</Badge>
+              </td>
+              <td className="px-3 py-2">
+                <Badge tone={pipelineTone(item.pipeline)}>{item.pipeline}</Badge>
+              </td>
+              <td className="px-3 py-2">
+                {item.opportunity_id ? (
+                  <Link
+                    href={`/dashboard?opp=${item.opportunity_id}`}
+                    className="text-xs font-medium underline-offset-4 hover:underline"
+                  >
+                    {item.opportunity_id.slice(0, 8)}…
+                  </Link>
+                ) : (
+                  <span className="text-xs text-zinc-400">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
