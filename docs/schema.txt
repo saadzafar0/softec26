@@ -1,0 +1,119 @@
+Supabase Schema
+sql-- Student profile
+students (
+  id uuid PK,
+  email text,
+  degree text,          -- BS/MS/PhD
+  program text,         -- CS, EE etc
+  semester int,
+  cgpa float,
+  skills text[],        -- ['Python', 'ML', 'React']
+  interests text[],
+  preferred_types text[], -- ['Scholarship', 'Internship']
+  financial_need bool,
+  location_pref text,   -- Local/National/International
+  nationality text,
+  graduation_date date,
+  gmail_refresh_token text,
+  created_at timestamp
+)
+
+-- Raw emails pulled from Gmail or pasted
+raw_emails (
+  id uuid PK,
+  student_id uuid FK,
+  gmail_message_id text,  -- null if manually pasted
+  subject text,
+  sender text,
+  sender_domain text,
+  received_at timestamp,
+  raw_body text,
+  cleaned_body text,
+  ingested_at timestamp
+)
+
+-- After classification
+opportunities (
+  id uuid PK,
+  raw_email_id uuid FK,
+  student_id uuid FK,
+  is_opportunity bool,
+  confidence float,       -- classifier confidence 0-1
+  status text,            -- 'active' | 'expired' | 'ineligible'
+  
+  -- Extracted fields
+  opp_type text,          -- Scholarship/Internship/Fellowship etc
+  org_name text,
+  deadline date,
+  deadline_ambiguous bool,
+  eligibility_raw text,   -- raw extracted text
+  cgpa_required float,    -- null if not stated
+  degree_required text,
+  skills_required text[],
+  documents_required text[],
+  benefits text,
+  funding_type text,      -- Full/Partial/None
+  geo_scope text,         -- Local/National/International
+  application_link text,
+  
+  -- Scores
+  profile_fit_score float,
+  urgency_score float,
+  value_score float,
+  semantic_score float,
+  final_score float,
+  
+  -- Output
+  explanation text,
+  action_checklist text[],
+  urgency_flag text,      -- Red/Orange/Yellow/Green
+  
+  created_at timestamp
+)
+
+-- Org knowledge base (pre-seeded, static)
+org_knowledge (
+  id uuid PK,
+  org_name text,
+  description text,       -- what gets embedded
+  prestige_score int,     -- 1-10, you set this manually
+  known_funding_type text,
+  typical_scope text
+)
+
+-- Gmail sync tracking
+gmail_sync_log (
+  id uuid PK,
+  student_id uuid FK,
+  synced_at timestamp,
+  emails_fetched int,
+  opportunities_found int,
+  last_message_id text    -- for pagination/dedup
+)
+
+
+
+ChromaDB Collections
+Collection 1: opportunity_chunks
+embedding: vector of chunk text
+metadata: {
+  opportunity_id,
+  student_id,
+  chunk_type: 'eligibility' | 'benefits' | 'header' | 'documents' | 'deadline',
+  deadline_date,
+  opp_type,
+  final_score
+}
+Collection 2: student_profiles
+embedding: vector of narrated profile text
+metadata: {
+  student_id,
+  updated_at
+}
+Collection 3: org_knowledge
+embedding: vector of org description
+metadata: {
+  org_knowledge_id,
+  org_name,
+  prestige_score
+}

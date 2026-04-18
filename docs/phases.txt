@@ -1,0 +1,57 @@
+## Phase 1 — Foundation
+**Goal: Everything runs, nothing breaks**
+
+- Supabase project up, schema deployed
+- FastAPI boilerplate, React boilerplate connected
+- ChromaDB initialized in persistent mode
+- Seed `org_knowledge` table + embed all org entries into ChromaDB
+- Environment variables set (Supabase URL/key, OpenAI key, Google OAuth creds)
+
+---
+
+## Phase 2 — Student Onboarding
+**Goal: A student can create a profile and connect Gmail**
+
+- Profile form built → POST `/profile` → inserts into `students`
+- Profile narrated into text → embedded → stored in ChromaDB `student_profiles`
+- Gmail OAuth flow → refresh token saved to `students`
+
+---
+
+## Phase 3 — Email Ingestion
+**Goal: Emails are in the database, cleaned and ready**
+
+- Gmail sync: use refresh token → fetch emails with keyword filter → decode → insert `raw_emails`
+- Manual paste fallback as backup input
+- Cleaning pipeline: strip HTML/signatures/footers, dedup, save `cleaned_body`
+
+---
+
+## Phase 4 — AI Processing Pipeline
+**Goal: Every email is classified and structured**
+
+- Classifier: rule-based signals → LLM confirmation → `is_opportunity` + `confidence` saved
+- Field extractor: LLM call → structured JSON → update `opportunities` row
+- Expired check: deadline vs today → set `status = 'expired'` immediately
+- Org lookup: query ChromaDB `org_knowledge` → fill gaps in extracted fields
+
+---
+
+## Phase 5 — Scoring
+**Goal: Every opportunity has a final score**
+
+- Eligibility hard filter → mark ineligible, stop processing those
+- Embed opportunity chunks → store in ChromaDB `opportunity_chunks`
+- Semantic score: profile vector vs opportunity chunks → cosine similarity
+- Deterministic score: urgency + fit + value formulas
+- Blend both → `final_score` saved to `opportunities`
+
+---
+
+## Phase 6 — Output Generation
+**Goal: Student sees a useful, explainable ranked list**
+
+- LLM call per top opportunity → `explanation` + `action_checklist[]` + `urgency_flag`
+- GET `/opportunities/{student_id}` returns ranked list ordered by `final_score DESC`
+- Frontend: ranked cards with urgency color, score, explanation, expandable checklist
+- Filters: by type, urgency, toggle expired/ineligible
