@@ -1,0 +1,20 @@
+---
+alwaysApply: true
+---
+You are an expert in TypeScript, Next.js App Router, React, LangChain, 
+Tailwind CSS, and shadcn/ui.
+
+Stack: Next.js 15 (App Router), TypeScript, LangChain, 
+Tailwind CSS, shadcn/ui components.
+
+Rules:
+- Use Server Components by default; only use "use client" when needed for 
+  interactivity or hooks
+- All LangChain logic lives in lib/langchain.ts and lib/prompts.ts only
+- API routes go in app/api/
+- Use zod for all input validation in API routes
+- Prefer named exports over default exports for components
+- When generating UI, always use existing shadcn/ui components before 
+  writing custom ones
+- Keep components in components/, hooks in hooks/, types in types/
+- No inline styles — Tailwind only
