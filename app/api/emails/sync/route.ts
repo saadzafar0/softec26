@@ -110,6 +110,27 @@ export async function POST(req: Request) {
     };
   });
 
+  async function hydrateExistingResult(
+    trace: Trace,
+    rawEmailId: string,
+  ): Promise<void> {
+    const { data: opp } = await supabase
+      .from("opportunities")
+      .select("id, status")
+      .eq("raw_email_id", rawEmailId)
+      .maybeSingle();
+    if (opp?.id) {
+      trace.pipeline = (opp.status ?? "active") as Trace["pipeline"];
+      trace.opportunity_id = opp.id as string;
+    } else {
+      // Raw email is stored but pipeline never produced an opportunity row yet
+      // (e.g. interrupted previous run). Re-run the pipeline so the user sees something.
+      const res = await processRawEmail(rawEmailId);
+      trace.pipeline = res.status as Trace["pipeline"];
+      if (res.opportunity_id) trace.opportunity_id = res.opportunity_id;
+    }
+  }
+
   for (const row of rawRows) {
     const trace: Trace = {
       gmail_message_id: row.gmail_message_id,
@@ -128,6 +149,7 @@ export async function POST(req: Request) {
     if (existing?.id) {
       trace.ingest = "dup_gmail_id";
       trace.raw_email_id = existing.id as string;
+      await hydrateExistingResult(trace, existing.id as string);
       traces.push(trace);
       continue;
     }
@@ -141,6 +163,7 @@ export async function POST(req: Request) {
     if (dup?.id) {
       trace.ingest = "dup_cleaned_hash";
       trace.raw_email_id = dup.id as string;
+      await hydrateExistingResult(trace, dup.id as string);
       traces.push(trace);
       continue;
     }
