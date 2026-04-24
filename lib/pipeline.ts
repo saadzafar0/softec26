@@ -25,6 +25,43 @@ type RawEmailRow = {
   cleaned_hash: string | null;
 };
 
+/**
+ * Look for an existing opportunity that matches a freshly-extracted one on
+ * (org_name lowercased, deadline, opp_type lowercased). All three must agree —
+ * same org with a different opp_type (scholarship vs. internship) is NOT a
+ * duplicate. Returns the existing opportunity row's id if found.
+ *
+ * Limitation: relies on the LLM returning consistent org_name strings. "HEC"
+ * vs "Higher Education Commission" still slips through. A future improvement
+ * could embed org_name and dedupe on cosine similarity instead.
+ */
+async function findDuplicateOpportunity(
+  supabase: ReturnType<typeof createServerSupabase>,
+  studentId: string,
+  orgName: string | null,
+  deadline: string | null,
+  oppType: string | null,
+  excludeRawEmailId: string,
+): Promise<string | null> {
+  if (!orgName || !oppType) return null;
+  let query = supabase
+    .from("opportunities")
+    .select("id, raw_email_id, deadline")
+    .eq("student_id", studentId)
+    .eq("is_opportunity", true)
+    .neq("raw_email_id", excludeRawEmailId)
+    .ilike("org_name", orgName)
+    .ilike("opp_type", oppType)
+    .in("status", ["active", "expired", "ineligible"])
+    .limit(5);
+  const { data, error } = await query;
+  if (error || !data || data.length === 0) return null;
+  // Match on deadline separately because Supabase's `eq` for a NULL doesn't work
+  // through PostgREST. Treat null == null as a match (rolling opps).
+  const hit = data.find((row) => (row.deadline ?? null) === (deadline ?? null));
+  return hit ? (hit.id as string) : null;
+}
+
 export async function processRawEmail(
   rawEmailId: string,
 ): Promise<{ status: string; opportunity_id?: string }> {
@@ -107,6 +144,22 @@ export async function processRawEmail(
     extracted,
     orgMatch,
   );
+
+  // Cross-email dedup. If the same student already has an opportunity for
+  // (org, deadline, opp_type), don't create a second card. We still keep the
+  // raw_email row so reprocessing is idempotent — we just don't pollute the
+  // dashboard. Trace status is "duplicate" so the connect page can report it.
+  const dupId = await findDuplicateOpportunity(
+    supabase,
+    row.student_id,
+    enriched.org_name,
+    enriched.deadline,
+    enriched.opp_type,
+    row.id,
+  );
+  if (dupId) {
+    return { status: "duplicate", opportunity_id: dupId };
+  }
 
   const expired = isExpired(enriched.deadline);
   const { eligible, reason } = isEligible(profile, enriched);

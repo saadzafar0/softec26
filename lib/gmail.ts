@@ -1,4 +1,5 @@
 import { google, type gmail_v1 } from "googleapis";
+import { buildGmailQuery } from "./keywords";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -6,8 +7,9 @@ const SCOPES = [
   "openid",
 ];
 
-const GMAIL_QUERY =
-  'scholarship OR internship OR fellowship OR "call for applications" OR opportunity OR grant OR "apply by" OR deadline newer_than:60d';
+// Built from the shared keyword list in `lib/keywords.ts` so it can never
+// drift from the rule-based classifier's regex vocabulary.
+const GMAIL_QUERY = buildGmailQuery();
 
 export function getOAuthClient() {
   const clientId = process.env["GOOGLE_CLIENT_ID"];

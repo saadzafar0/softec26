@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useStudent } from "@/hooks/useStudent";
 import {
@@ -17,7 +18,6 @@ import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -54,12 +54,108 @@ type Opportunity = {
   evidence_quotes: { quote: string; supports: string }[] | null;
 };
 
+type StudentProfile = {
+  id: string;
+  cgpa: number | null;
+  degree: string | null;
+};
+
+// Mirrors lib/score.ts degreeRank(). Client-side copy so we can derive the
+// "why ineligible" reason without a round-trip to the server.
+const DEGREE_RANK_RX: [RegExp, number][] = [
+  [/\bphd\b|\bph\.d\b|\bdoctor(ate|al)\b/i, 3],
+  [/\bmasters?\b|\bm\.?sc\b|\bm\.?s\b|\bm\.?a\b|\bmba\b|\bgraduate\b/i, 2],
+  [/\bbachelors?\b|\bb\.?sc\b|\bb\.?s\b|\bb\.?a\b|\bundergraduate\b/i, 1],
+];
+
+function degreeRankClient(d: string | null): number | null {
+  if (!d) return null;
+  for (const [rx, rank] of DEGREE_RANK_RX) {
+    if (rx.test(d)) return rank;
+  }
+  return null;
+}
+
+function ineligibilityReason(
+  student: StudentProfile | null,
+  opp: Opportunity,
+): string | null {
+  if (!student) return null;
+  if (
+    opp.cgpa_required !== null &&
+    student.cgpa !== null &&
+    student.cgpa < opp.cgpa_required - 0.01
+  ) {
+    return `Your CGPA (${student.cgpa.toFixed(2)}) is below the required ${opp.cgpa_required.toFixed(2)}.`;
+  }
+  const reqRank = degreeRankClient(opp.degree_required);
+  const stdRank = degreeRankClient(student.degree);
+  if (reqRank && stdRank && reqRank > stdRank) {
+    return `Requires ${opp.degree_required} — your profile lists ${student.degree}.`;
+  }
+  // Fallback when we can't pinpoint the exact rule (e.g. eligibility text is
+  // free-form and the pipeline marked it based on other signals).
+  return opp.eligibility_raw
+    ? `Check eligibility: ${opp.eligibility_raw}`
+    : null;
+}
+
 const URGENCY_TONE: Record<string, "red" | "orange" | "yellow" | "green"> = {
   Red: "red",
   Orange: "orange",
   Yellow: "yellow",
   Green: "green",
 };
+
+const URGENCY_PILLS: {
+  value: "all" | "Red" | "Orange" | "Yellow" | "Green";
+  label: string;
+  title: string;
+  dot: string;
+  activeBg: string;
+  activeText: string;
+}[] = [
+  {
+    value: "all",
+    label: "All",
+    title: "All urgencies",
+    dot: "",
+    activeBg: "bg-zinc-900 dark:bg-zinc-50",
+    activeText: "text-zinc-50 dark:text-zinc-900",
+  },
+  {
+    value: "Red",
+    label: "Red",
+    title: "Due in ≤ 3 days",
+    dot: "bg-red-500",
+    activeBg: "bg-red-600",
+    activeText: "text-white",
+  },
+  {
+    value: "Orange",
+    label: "Orange",
+    title: "Due in ≤ 7 days",
+    dot: "bg-orange-500",
+    activeBg: "bg-orange-500",
+    activeText: "text-white",
+  },
+  {
+    value: "Yellow",
+    label: "Yellow",
+    title: "Due in ≤ 14 days",
+    dot: "bg-yellow-400",
+    activeBg: "bg-yellow-500",
+    activeText: "text-white",
+  },
+  {
+    value: "Green",
+    label: "Green",
+    title: "More than 14 days",
+    dot: "bg-green-500",
+    activeBg: "bg-green-600",
+    activeText: "text-white",
+  },
+];
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -71,7 +167,9 @@ export default function DashboardPage() {
   const [filterUrgency, setFilterUrgency] = useState<string>("all");
   const [showExpired, setShowExpired] = useState(false);
   const [showIneligible, setShowIneligible] = useState(false);
+  const [knownTypes, setKnownTypes] = useState<string[]>([]);
   const [detail, setDetail] = useState<Opportunity | null>(null);
+  const [student, setStudent] = useState<StudentProfile | null>(null);
 
   const load = useCallback(async () => {
     if (!studentId) return;
@@ -110,11 +208,90 @@ export default function DashboardPage() {
     load();
   }, [load]);
 
-  const types = useMemo(() => {
-    const s = new Set<string>();
-    data.forEach((o) => o.opp_type && s.add(o.opp_type));
-    return Array.from(s).sort();
-  }, [data]);
+  // Fetch the student profile once per session so we can show a precise
+  // "why ineligible" reason on cards (e.g. "your CGPA 3.4 < required 3.5").
+  useEffect(() => {
+    if (!studentId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/profile?student_id=${encodeURIComponent(studentId)}`,
+        );
+        if (!res.ok || cancelled) return;
+        const json = (await res.json()) as {
+          profile?: { id: string; cgpa: number | null; degree: string | null };
+        };
+        if (json.profile) {
+          setStudent({
+            id: json.profile.id,
+            cgpa: json.profile.cgpa,
+            degree: json.profile.degree,
+          });
+        }
+      } catch {
+        // non-fatal: ineligible cards just won't have the precise reason line
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId]);
+
+  // Load the stable list of types once (ignoring current filters) so the Type
+  // dropdown doesn't collapse to only what the current filter allows.
+  useEffect(() => {
+    if (!studentId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const qs = new URLSearchParams({
+          student_id: studentId,
+          status: "all",
+          include_expired: "1",
+          include_ineligible: "1",
+        });
+        const res = await fetch(`/api/opportunities?${qs.toString()}`);
+        if (!res.ok || cancelled) return;
+        const json = (await res.json()) as { opportunities?: Opportunity[] };
+        const set = new Set<string>();
+        (json.opportunities ?? []).forEach((o) => {
+          if (o.opp_type) set.add(o.opp_type);
+        });
+        setKnownTypes(Array.from(set).sort());
+      } catch {
+        // non-fatal: the dropdown will just stay empty
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId]);
+
+  // Always keep the currently-selected type in the dropdown even if it has
+  // been filtered out of `knownTypes` for some reason.
+  const typeOptions = useMemo(() => {
+    const set = new Set(knownTypes);
+    if (filterType !== "all") set.add(filterType);
+    return Array.from(set).sort();
+  }, [knownTypes, filterType]);
+
+  const filtersActive =
+    filterType !== "all" ||
+    filterUrgency !== "all" ||
+    showExpired ||
+    showIneligible;
+
+  const resetFilters = () => {
+    setFilterType("all");
+    setFilterUrgency("all");
+    setShowExpired(false);
+    setShowIneligible(false);
+  };
+
+  const activeCount = data.filter((o) => o.status === "active").length;
+  const expiredCount = data.filter((o) => o.status === "expired").length;
+  const ineligibleCount = data.filter((o) => o.status === "ineligible").length;
 
   if (!hydrated || !studentId) {
     return (
@@ -141,46 +318,115 @@ export default function DashboardPage() {
       </div>
 
       <Card>
-        <CardContent className="flex flex-wrap items-center gap-4 p-4">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-500">Type</span>
-            <Select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="h-9 w-44"
+        <CardContent className="divide-y divide-zinc-200 p-0 dark:divide-zinc-800">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                Type
+              </span>
+              <SelectWithCaret
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="w-44"
+                aria-label="Filter by opportunity type"
+              >
+                <option value="all">All types</option>
+                {typeOptions.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </SelectWithCaret>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                Urgency
+              </span>
+              <div
+                role="radiogroup"
+                aria-label="Filter by urgency"
+                className="inline-flex items-center gap-0.5 rounded-md border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                {URGENCY_PILLS.map((p) => {
+                  const selected = filterUrgency === p.value;
+                  return (
+                    <button
+                      key={p.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      title={p.title}
+                      onClick={() => setFilterUrgency(p.value)}
+                      className={
+                        "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors " +
+                        (selected
+                          ? `${p.activeBg} ${p.activeText} shadow-sm`
+                          : "text-zinc-600 hover:bg-white hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-950 dark:hover:text-zinc-100")
+                      }
+                    >
+                      {p.dot ? (
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${p.dot} ${selected ? "opacity-90 ring-2 ring-white/40" : ""}`}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="ml-auto flex flex-wrap items-center gap-4">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Switch checked={showExpired} onCheckedChange={setShowExpired} />
+                <span>Expired</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Switch
+                  checked={showIneligible}
+                  onCheckedChange={setShowIneligible}
+                />
+                <span>Ineligible</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              <span>
+                {loading ? (
+                  "Loading…"
+                ) : (
+                  <>
+                    Showing{" "}
+                    <b className="text-zinc-900 dark:text-zinc-100">
+                      {data.length}
+                    </b>{" "}
+                    opportunit{data.length === 1 ? "y" : "ies"}
+                    {filtersActive ? " (filtered)" : ""}
+                  </>
+                )}
+              </span>
+              {activeCount > 0 ? (
+                <Badge tone="green">{activeCount} active</Badge>
+              ) : null}
+              {expiredCount > 0 ? (
+                <Badge tone="muted">{expiredCount} expired</Badge>
+              ) : null}
+              {ineligibleCount > 0 ? (
+                <Badge tone="red">{ineligibleCount} ineligible</Badge>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={resetFilters}
+              disabled={!filtersActive}
+              className="text-xs font-medium text-zinc-600 underline-offset-4 hover:text-blue-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline disabled:hover:text-zinc-600 dark:text-zinc-400 dark:hover:text-blue-400 dark:disabled:hover:text-zinc-400"
             >
-              <option value="all">All</option>
-              {types.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-500">Urgency</span>
-            <Select
-              value={filterUrgency}
-              onChange={(e) => setFilterUrgency(e.target.value)}
-              className="h-9 w-36"
-            >
-              <option value="all">All</option>
-              <option value="Red">Red</option>
-              <option value="Orange">Orange</option>
-              <option value="Yellow">Yellow</option>
-              <option value="Green">Green</option>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2">
-            <Switch checked={showExpired} onCheckedChange={setShowExpired} />
-            <span className="text-sm">Show expired</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={showIneligible}
-              onCheckedChange={setShowIneligible}
-            />
-            <span className="text-sm">Show ineligible</span>
+              Reset filters
+            </button>
           </div>
         </CardContent>
       </Card>
@@ -193,17 +439,54 @@ export default function DashboardPage() {
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="space-y-4">
-          {data.length === 0 && !loading ? (
+          {loading && data.length === 0 ? <SkeletonList /> : null}
+
+          {!loading && data.length === 0 ? (
             <Card>
-              <CardContent className="p-8 text-center text-sm text-zinc-500">
-                No opportunities yet. Head to Connect and sync Gmail or paste
-                an email.
+              <CardContent className="space-y-3 p-8 text-center">
+                {filtersActive ? (
+                  <>
+                    <p className="text-sm text-zinc-500">
+                      No opportunities match these filters.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={resetFilters}
+                      className="text-sm font-medium text-blue-600 underline-offset-4 hover:underline dark:text-blue-400"
+                    >
+                      Reset filters
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-base font-semibold">
+                      No opportunities yet
+                    </h3>
+                    <p className="mx-auto max-w-md text-sm text-zinc-500 dark:text-zinc-400">
+                      Sync your Gmail inbox or paste an email manually. We&apos;ll
+                      classify, extract, score, and explain each one.
+                    </p>
+                    <div className="flex justify-center pt-1">
+                      <Link
+                        href="/connect"
+                        className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      >
+                        Go to Connect →
+                      </Link>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           ) : null}
 
           {data.map((o) => (
-            <OppCard key={o.id} opp={o} onOpen={() => setDetail(o)} />
+            <OppCard
+              key={o.id}
+              opp={o}
+              student={student}
+              onOpen={() => setDetail(o)}
+            />
           ))}
         </div>
 
@@ -214,9 +497,72 @@ export default function DashboardPage() {
 
       <Dialog open={!!detail} onOpenChange={(v) => !v && setDetail(null)}>
         <DialogContent>
-          {detail ? <DetailView opp={detail} /> : null}
+          {detail ? <DetailView opp={detail} student={student} /> : null}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function SkeletonList() {
+  // Three placeholder rows that mimic the OppCard footprint while the network
+  // request is in flight. Avoids the "is the page broken?" feeling that a
+  // single tiny "Loading…" line gives during the 30-60s first-time sync.
+  return (
+    <div className="space-y-4">
+      {[0, 1, 2].map((i) => (
+        <Card key={i}>
+          <div className="flex animate-pulse gap-5 p-6">
+            <div className="flex-1 space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-5 w-44 rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="h-4 w-20 rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="ml-auto h-5 w-14 rounded-full bg-zinc-200 dark:bg-zinc-800" />
+              </div>
+              <div className="h-3 w-2/3 rounded bg-zinc-200 dark:bg-zinc-800" />
+              <div className="space-y-1.5">
+                <div className="h-3 w-full rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="h-3 w-11/12 rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="h-3 w-9/12 rounded bg-zinc-200 dark:bg-zinc-800" />
+              </div>
+              <div className="flex gap-3 pt-1">
+                <div className="h-8 w-24 rounded-md bg-zinc-200 dark:bg-zinc-800" />
+                <div className="h-8 w-16 rounded-md bg-zinc-200 dark:bg-zinc-800" />
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-col items-center gap-1">
+              <div className="h-16 w-16 rounded-full bg-zinc-200 dark:bg-zinc-800" />
+              <div className="h-2.5 w-14 rounded bg-zinc-200 dark:bg-zinc-800" />
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function SelectWithCaret({
+  className,
+  children,
+  ...props
+}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <div className={`relative inline-block ${className ?? ""}`}>
+      <Select {...props} className="h-9 w-full pr-8">
+        {children}
+      </Select>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 20 20"
+        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M6 8l4 4 4-4" />
+      </svg>
     </div>
   );
 }
@@ -413,9 +759,11 @@ function ScoreOrb({ score }: { score: number }) {
 
 function OppCard({
   opp,
+  student,
   onOpen,
 }: {
   opp: Opportunity;
+  student: StudentProfile | null;
   onOpen: () => void;
 }) {
   const score = Math.round(((opp.final_score ?? 0) * 100 + Number.EPSILON));
@@ -427,12 +775,15 @@ function OppCard({
         ? "red"
         : "default";
 
+  const ineligReason =
+    opp.status === "ineligible" ? ineligibilityReason(student, opp) : null;
+
   return (
     <Card className="transition-colors hover:border-zinc-300 dark:hover:border-zinc-700">
-      <div className="flex gap-5 p-6">
-        <div className="flex-1 space-y-3">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-5 p-5 sm:flex-row sm:p-6">
+        <div className="min-w-0 flex-1 space-y-3">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <h3 className="text-base font-semibold tracking-tight">
                 {opp.org_name ?? "Unknown org"}
               </h3>
@@ -450,14 +801,30 @@ function OppCard({
                 <Badge tone={statusTone}>{opp.status}</Badge>
               ) : null}
             </div>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              {opp.deadline
-                ? `Deadline: ${opp.deadline}${opp.deadline_ambiguous ? " (ambiguous)" : ""}`
-                : "Deadline not stated"}
-              {opp.funding_type ? ` · ${opp.funding_type} funding` : ""}
-              {opp.geo_scope ? ` · ${opp.geo_scope}` : ""}
-            </p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <span>
+                {opp.deadline
+                  ? `Deadline: ${opp.deadline}`
+                  : "Deadline not stated"}
+                {opp.funding_type ? ` · ${opp.funding_type} funding` : ""}
+                {opp.geo_scope ? ` · ${opp.geo_scope}` : ""}
+              </span>
+              {opp.deadline && opp.deadline_ambiguous ? (
+                <Badge
+                  tone="yellow"
+                  title="The email didn't state the deadline clearly — this date is our best guess."
+                >
+                  Deadline unclear
+                </Badge>
+              ) : null}
+            </div>
           </div>
+
+          {ineligReason ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+              <span className="font-semibold">Ineligible:</span> {ineligReason}
+            </p>
+          ) : null}
 
           {opp.explanation ? (
             <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
@@ -470,12 +837,25 @@ function OppCard({
           )}
 
           {opp.inferred_fields?.length ? (
-            <p className="text-xs text-zinc-500">
-              Inferred from org knowledge: {opp.inferred_fields.join(", ")}
-            </p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {opp.inferred_fields.map((f) => (
+                <Badge
+                  key={f}
+                  tone="muted"
+                  title="This field wasn't in the email. We filled it from our organization knowledge base (RAG lookup)."
+                  className="gap-1 font-normal"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="h-1.5 w-1.5 rounded-full bg-blue-500 dark:bg-blue-400"
+                  />
+                  Inferred from HEC profile: {f}
+                </Badge>
+              ))}
+            </div>
           ) : null}
 
-          <div className="flex items-center gap-4 pt-1">
+          <div className="flex flex-wrap items-center gap-3 pt-1 sm:gap-4">
             <Button variant="outline" size="sm" onClick={onOpen}>
               View details
             </Button>
@@ -484,7 +864,7 @@ function OppCard({
                 href={opp.application_link}
                 target="_blank"
                 rel="noreferrer noopener"
-                className="text-sm font-medium underline-offset-4 hover:underline"
+                className="break-all text-sm font-medium underline-offset-4 hover:underline"
               >
                 Apply ↗
               </a>
@@ -492,7 +872,7 @@ function OppCard({
           </div>
         </div>
 
-        <div className="shrink-0">
+        <div className="flex shrink-0 justify-start sm:justify-center">
           <ScoreOrb score={score} />
         </div>
       </div>
@@ -500,7 +880,16 @@ function OppCard({
   );
 }
 
-function DetailView({ opp }: { opp: Opportunity }) {
+function DetailView({
+  opp,
+  student,
+}: {
+  opp: Opportunity;
+  student: StudentProfile | null;
+}) {
+  const ineligReason =
+    opp.status === "ineligible" ? ineligibilityReason(student, opp) : null;
+
   return (
     <>
       <DialogHeader>
@@ -510,14 +899,28 @@ function DetailView({ opp }: { opp: Opportunity }) {
             {opp.opp_type ? `· ${opp.opp_type}` : ""}
           </span>
         </DialogTitle>
-        <DialogDescription>
-          {opp.deadline
-            ? `Deadline ${opp.deadline}${opp.deadline_ambiguous ? " (ambiguous)" : ""}`
-            : "No deadline stated"}
-        </DialogDescription>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-zinc-500 dark:text-zinc-400">
+          <span>
+            {opp.deadline ? `Deadline ${opp.deadline}` : "No deadline stated"}
+          </span>
+          {opp.deadline && opp.deadline_ambiguous ? (
+            <Badge
+              tone="yellow"
+              title="The email didn't state the deadline clearly — this date is our best guess."
+            >
+              Deadline unclear
+            </Badge>
+          ) : null}
+        </div>
       </DialogHeader>
 
       <div className="space-y-5 text-sm">
+        {ineligReason ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+            <span className="font-semibold">Ineligible:</span> {ineligReason}
+          </p>
+        ) : null}
+
         {opp.explanation ? (
           <p className="text-zinc-700 dark:text-zinc-300">{opp.explanation}</p>
         ) : null}
@@ -527,17 +930,17 @@ function DetailView({ opp }: { opp: Opportunity }) {
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
               From the email
             </h3>
-            <ul className="space-y-2">
+            <ul className="space-y-2.5">
               {opp.evidence_quotes.map((q, i) => (
                 <li
                   key={i}
-                  className="border-l-2 border-zinc-300 pl-3 dark:border-zinc-700"
+                  className="border-l-2 border-zinc-200 pl-3 dark:border-zinc-800"
                 >
-                  <p className="text-sm italic leading-relaxed text-zinc-700 dark:text-zinc-300">
-                    “{q.quote}”
+                  <p className="text-[13px] italic leading-relaxed text-zinc-500 dark:text-zinc-400">
+                    &ldquo;{q.quote}&rdquo;
                   </p>
                   {q.supports ? (
-                    <p className="mt-0.5 text-[11px] uppercase tracking-wide text-zinc-500">
+                    <p className="mt-1 text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
                       {q.supports}
                     </p>
                   ) : null}

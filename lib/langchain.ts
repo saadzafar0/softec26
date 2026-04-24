@@ -66,3 +66,32 @@ export async function embedOne(text: string): Promise<number[]> {
 export function pgvectorLiteral(vec: number[]): string {
   return `[${vec.join(",")}]`;
 }
+
+/**
+ * Wrap an async LLM call with linear-exponential retry. Returns null if all
+ * attempts fail. Designed for transient GitHub Models 429 / 503 errors that
+ * otherwise silently turn opportunities into noise.
+ *
+ * `label` is included in the failure log so we can tell extract failures from
+ * explain failures from classify failures in the server console.
+ */
+export async function withLLMRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  maxAttempts: number = 3,
+): Promise<T | null> {
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+      }
+    }
+  }
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  console.error(`[${label}] failed after ${maxAttempts} attempts:`, msg);
+  return null;
+}

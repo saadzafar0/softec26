@@ -1,30 +1,7 @@
 import { z } from "zod";
 import { createChatModel } from "./langchain";
+import { OPPORTUNITY_RX } from "./keywords";
 import { CLASSIFY_PROMPT } from "./prompts";
-
-const KEYWORDS = [
-  /\bscholarship(s)?\b/i,
-  /\binternship(s)?\b/i,
-  /\bfellowship(s)?\b/i,
-  /\bgrant(s)?\b/i,
-  /\bstipend\b/i,
-  /\btuition\b/i,
-  /\beligibility\b/i,
-  /\bapply (by|before|now|via|through|online)\b/i,
-  /\bdeadline\b/i,
-  /\bcall for applications\b/i,
-  /\b(undergraduate|graduate|phd|masters?)\b/i,
-  /\bsummer (camp|school|program|programme)\b/i,
-  /\bexchange (program|programme|semester)\b/i,
-  /\bleadership (program|programme|academy)\b/i,
-  /\bmentorship (program|programme)\b/i,
-  /\bresearch (program|programme|opportunity|assistantship)\b/i,
-  /\bbootcamp\b/i,
-  /\bopportunit(y|ies)\b/i,
-  /\bcompetition\b/i,
-  /\bhackathon\b/i,
-  /\bworkshop\b/i,
-];
 
 const NEGATIVE_SENDER_DOMAINS = [
   /classroom\.google\.com$/i,
@@ -65,7 +42,7 @@ export function ruleScore(
   // Subject keywords weigh much more than body keywords.
   let subjectHits = 0;
   let bodyHits = 0;
-  for (const rx of KEYWORDS) {
+  for (const rx of OPPORTUNITY_RX) {
     if (rx.test(subj)) subjectHits += 1;
     else if (rx.test(body)) bodyHits += 1;
   }

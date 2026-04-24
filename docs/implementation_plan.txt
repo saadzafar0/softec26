@@ -70,10 +70,10 @@ Embed each chunk → insert into the Supabase `opportunity_chunks` table (pgvect
 
 Step 10 — Semantic Scoring
 
-Fetch student profile vector from Supabase `student_profile_embeddings`
-Call the `match_opportunity_chunks` RPC filtered by student_id → get similarity scores per chunk (pgvector cosine)
-Average across chunks of same opportunity → semantic_score
-Update opportunities.semantic_score
+Re-embed the `narrated_text` from `student_profile_embeddings` (on demand) to get the profile vector
+Call the `match_opportunity_chunks_for_opp` RPC filtered by opportunity_id → per-chunk cosine similarities for that opportunity
+Average across that opportunity's chunks, clamped to [0,1] → semantic_score (raw)
+Update opportunities.semantic_score (stretching happens later in the blend step)
 
 
 Step 11 — Deterministic Scoring
@@ -81,7 +81,13 @@ Step 11 — Deterministic Scoring
 Calculate urgency_score from deadline days
 Calculate profile_fit_score from field-by-field comparison (CGPA, degree, skills overlap, preferred types)
 Calculate value_score from geo_scope, funding_type, prestige_score
-Blend: final_score = (fit × 0.40) + (urgency × 0.35) + (value × 0.25) then mix with semantic: final = (deterministic × 0.6) + (semantic × 0.4)
+Blend (matches lib/score.ts):
+  deterministic = (fit × 0.30) + (urgency × 0.30) + (value × 0.40)
+  if semantic is null → final_score = deterministic
+  else → final_score = (deterministic × 0.70) + (stretched_semantic × 0.30)
+  where stretched_semantic = clamp01((raw_cosine − 0.20) / (0.60 − 0.20))
+  (text-embedding-3-small rarely produces cosines above ~0.65 for non-duplicate
+   text, so we remap the useful band into [0, 1] before blending.)
 Update opportunities with all scores
 
 

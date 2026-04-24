@@ -84,6 +84,7 @@ export async function POST(req: Request) {
       | "active"
       | "expired"
       | "ineligible"
+      | "duplicate"
       | "error"
       | "empty"
       | "missing"

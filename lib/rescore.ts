@@ -131,17 +131,38 @@ export async function rescoreStudent(
 
     const finalScore = blendScores({ fit, urgency, value, semantic });
 
+    // Invalidate the stored explanation if either:
+    //   (a) the status flipped (e.g. ineligible -> active after profile edit), or
+    //   (b) the final_score moved by ≥ 0.05 (5 pts on the 0-100 display scale).
+    // Otherwise the dashboard would show old reasoning ("urgent deadline next
+    // week") next to numbers that no longer support it. Setting the columns to
+    // null lets `runExplanations` regenerate them on the next pass.
+    const oldScore =
+      typeof opp.final_score === "number" ? opp.final_score : null;
+    const oldStatus = opp.status as string;
+    const scoreShifted =
+      oldScore !== null && Math.abs(finalScore - oldScore) >= 0.05;
+    const statusFlipped = oldStatus !== status;
+    const invalidateExplanation = scoreShifted || statusFlipped;
+
+    const update: Record<string, unknown> = {
+      status,
+      profile_fit_score: fit,
+      urgency_score: urgency,
+      value_score: value,
+      semantic_score: semantic,
+      final_score: finalScore,
+      urgency_flag: urgencyFlag(opp.deadline),
+    };
+    if (invalidateExplanation) {
+      update.explanation = null;
+      update.action_checklist = null;
+      update.evidence_quotes = [];
+    }
+
     await supabase
       .from("opportunities")
-      .update({
-        status,
-        profile_fit_score: fit,
-        urgency_score: urgency,
-        value_score: value,
-        semantic_score: semantic,
-        final_score: finalScore,
-        urgency_flag: urgencyFlag(opp.deadline),
-      })
+      .update(update)
       .eq("id", opp.id);
 
     await supabase

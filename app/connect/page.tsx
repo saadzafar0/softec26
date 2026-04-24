@@ -80,21 +80,29 @@ function ConnectInner() {
       | "active"
       | "expired"
       | "ineligible"
+      | "duplicate"
       | "error"
       | "empty"
       | "missing"
       | "no_student";
     opportunity_id?: string;
   };
+  type SummaryKind = "sync" | "manual" | "reprocess" | "cleanup";
   const [summary, setSummary] = useState<{
+    kind: SummaryKind;
     emails_fetched?: number;
     new_emails?: number;
     inserted?: number;
     skipped_duplicates?: number;
     opportunities_active?: number;
     items?: TraceItem[];
+    reprocessed?: number;
+    rescored?: number;
+    raw_emails_removed?: number;
+    opportunities_removed?: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [needsReauth, setNeedsReauth] = useState(false);
 
   useEffect(() => {
     if (hydrated && !isAuthenticated) {
@@ -121,6 +129,7 @@ function ConnectInner() {
       return;
     }
     setError(null);
+    setNeedsReauth(false);
     try {
       const res = await fetch("/api/auth/gmail/start", {
         method: "POST",
@@ -143,6 +152,7 @@ function ConnectInner() {
     setSyncing(true);
     setSummary(null);
     setError(null);
+    setNeedsReauth(false);
     try {
       const res = await fetch("/api/emails/sync", {
         method: "POST",
@@ -151,14 +161,17 @@ function ConnectInner() {
       });
       const data = await res.json();
       if (!res.ok) {
-        if (data.code === "GMAIL_REAUTH") {
-          setError("Gmail session expired. Please reconnect Gmail.");
+        if (data.code === "GMAIL_REAUTH" || res.status === 401) {
+          setNeedsReauth(true);
+          setError(
+            "Your Gmail session expired or the token was revoked. Reconnect to keep syncing.",
+          );
         } else {
           setError(data.error ?? "Sync failed");
         }
         return;
       }
-      setSummary(data);
+      setSummary({ kind: "sync", ...data });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
     } finally {
@@ -166,50 +179,26 @@ function ConnectInner() {
     }
   };
 
-  const rescoreAll = async () => {
+  const cleanupJunk = async () => {
     if (!studentId) return;
     setSyncing(true);
     setSummary(null);
     setError(null);
     try {
-      const res = await fetch("/api/opportunities/rescore", {
+      const res = await fetch("/api/emails/cleanup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ student_id: studentId, include_hidden: true }),
+        body: JSON.stringify({ student_id: studentId }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Rescore failed");
+        setError(data.error ?? "Cleanup failed");
         return;
       }
       setSummary({
-        emails_fetched: data.rescored,
-        new_emails: 0,
-        opportunities_active: (data.items ?? []).filter(
-          (i: { status: string }) => i.status === "active",
-        ).length,
-        items: (data.items ?? []).map(
-          (i: {
-            opportunity_id: string;
-            org_name: string | null;
-            status: string;
-            final_score: number;
-            old_final_score: number | null;
-          }) => ({
-            gmail_message_id: i.opportunity_id,
-            subject: i.org_name
-              ? `${i.org_name} — score ${Math.round(i.final_score * 100)}${
-                  i.old_final_score !== null
-                    ? ` (was ${Math.round(i.old_final_score * 100)})`
-                    : ""
-                }`
-              : `score ${Math.round(i.final_score * 100)}`,
-            sender: null,
-            ingest: "new" as const,
-            pipeline: i.status as TraceItem["pipeline"],
-            opportunity_id: i.opportunity_id,
-          }),
-        ),
+        kind: "cleanup",
+        raw_emails_removed: data.raw_emails_removed ?? 0,
+        opportunities_removed: data.opportunities_removed ?? 0,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -224,37 +213,58 @@ function ConnectInner() {
     setSummary(null);
     setError(null);
     try {
-      const res = await fetch("/api/emails/reprocess", {
+      // 1. Re-run pipeline on noise rows (may promote some to active opportunities).
+      const reprocessRes = await fetch("/api/emails/reprocess", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ student_id: studentId, only_noise: true }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Reprocess failed");
+      const reprocessData = await reprocessRes.json();
+      if (!reprocessRes.ok) {
+        setError(reprocessData.error ?? "Reprocess failed");
         return;
       }
-      // Shape-shift reprocess response into the trace-style summary the UI renders.
+
+      // 2. Rescore every opportunity (including ones just promoted above).
+      const rescoreRes = await fetch("/api/opportunities/rescore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId, include_hidden: true }),
+      });
+      const rescoreData = await rescoreRes.json();
+      if (!rescoreRes.ok) {
+        setError(rescoreData.error ?? "Rescore failed");
+        return;
+      }
+
+      const rescoredItems = (rescoreData.items ?? []) as {
+        opportunity_id: string;
+        org_name: string | null;
+        status: string;
+        final_score: number;
+        old_final_score: number | null;
+      }[];
+
       setSummary({
-        emails_fetched: data.reprocessed,
-        new_emails: 0,
-        opportunities_active: data.opportunities_active,
-        items: (data.items ?? []).map(
-          (i: {
-            raw_email_id: string;
-            subject: string | null;
-            sender: string | null;
-            status: string;
-            opportunity_id?: string;
-          }) => ({
-            gmail_message_id: i.raw_email_id,
-            subject: i.subject,
-            sender: i.sender,
-            ingest: "new" as const,
-            pipeline: i.status as TraceItem["pipeline"],
-            opportunity_id: i.opportunity_id,
-          }),
-        ),
+        kind: "reprocess",
+        reprocessed: reprocessData.reprocessed ?? 0,
+        rescored: rescoreData.rescored ?? 0,
+        opportunities_active: rescoredItems.filter((i) => i.status === "active")
+          .length,
+        items: rescoredItems.map((i) => ({
+          gmail_message_id: i.opportunity_id,
+          subject: i.org_name
+            ? `${i.org_name} — score ${Math.round(i.final_score * 100)}${
+                i.old_final_score !== null
+                  ? ` (was ${Math.round(i.old_final_score * 100)})`
+                  : ""
+              }`
+            : `score ${Math.round(i.final_score * 100)}`,
+          sender: null,
+          ingest: "new" as const,
+          pipeline: i.status as TraceItem["pipeline"],
+          opportunity_id: i.opportunity_id,
+        })),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -291,7 +301,7 @@ function ConnectInner() {
         setError(data.error ?? "Submit failed");
         return;
       }
-      setSummary(data);
+      setSummary({ kind: "manual", ...data });
       setManualBody("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
@@ -344,17 +354,17 @@ function ConnectInner() {
                 variant="ghost"
                 onClick={reprocessAll}
                 disabled={!studentId || syncing}
-                title="Re-run the pipeline on all previously-fetched emails currently marked as noise. Useful after tuning the classifier."
+                title="Re-run the pipeline on noise emails (may surface new opportunities) and then rescore every opportunity with the current profile and formula."
               >
-                {syncing ? "Processing…" : "Reprocess noise"}
+                {syncing ? "Processing…" : "Reprocess all"}
               </Button>
               <Button
                 variant="ghost"
-                onClick={rescoreAll}
+                onClick={cleanupJunk}
                 disabled={!studentId || syncing}
-                title="Recompute scores for all stored opportunities using the current formula. No LLM calls."
+                title="Remove emails you sent yourself and Google Classroom notifications that landed in the database before the new filters were added."
               >
-                {syncing ? "Rescoring…" : "Rescore all"}
+                {syncing ? "Cleaning…" : "Cleanup junk"}
               </Button>
               <Link
                 href="/dashboard"
@@ -460,40 +470,18 @@ We are hiring BSCS interns for summer 2026…`}
       {summary ? (
         <Card>
           <CardHeader>
-            <CardTitle>Last sync</CardTitle>
+            <CardTitle>{summaryTitle(summary.kind)}</CardTitle>
             <CardDescription>
-              What happened to each fetched email as it moved through the
-              pipeline.
+              {summaryDescription(summary.kind)}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap gap-4 text-sm">
-              {"emails_fetched" in summary ? (
-                <span>
-                  Fetched <b>{summary.emails_fetched}</b>
+              {summaryStats(summary).map((stat) => (
+                <span key={stat.label}>
+                  {stat.label} <b>{stat.value}</b>
                 </span>
-              ) : null}
-              {"new_emails" in summary ? (
-                <span>
-                  New <b>{summary.new_emails}</b>
-                </span>
-              ) : null}
-              {"inserted" in summary ? (
-                <span>
-                  Inserted <b>{summary.inserted}</b>
-                </span>
-              ) : null}
-              {"skipped_duplicates" in summary ? (
-                <span>
-                  Duplicates skipped <b>{summary.skipped_duplicates}</b>
-                </span>
-              ) : null}
-              {"opportunities_active" in summary ? (
-                <span>
-                  New active opportunities{" "}
-                  <b>{summary.opportunities_active}</b>
-                </span>
-              ) : null}
+              ))}
             </div>
 
             {summary.items && summary.items.length > 0 ? (
@@ -503,7 +491,22 @@ We are hiring BSCS interns for summer 2026…`}
         </Card>
       ) : null}
 
-      {error ? (
+      {needsReauth ? (
+        <Card className="border-amber-300 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/30">
+          <CardHeader>
+            <CardTitle className="text-amber-900 dark:text-amber-200">
+              Reconnect Gmail
+            </CardTitle>
+            <CardDescription className="text-amber-800/80 dark:text-amber-300/70">
+              {error ??
+                "Your Gmail session expired. Reconnect to resume syncing."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={startGmail}>Reconnect Gmail</Button>
+          </CardContent>
+        </Card>
+      ) : error ? (
         <Card>
           <CardContent className="p-4 text-sm text-red-600">
             {error}
@@ -512,6 +515,93 @@ We are hiring BSCS interns for summer 2026…`}
       ) : null}
     </div>
   );
+}
+
+type SummaryData = {
+  kind: "sync" | "manual" | "reprocess" | "cleanup";
+  emails_fetched?: number;
+  new_emails?: number;
+  inserted?: number;
+  skipped_duplicates?: number;
+  opportunities_active?: number;
+  reprocessed?: number;
+  rescored?: number;
+  raw_emails_removed?: number;
+  opportunities_removed?: number;
+};
+
+function summaryTitle(kind: SummaryData["kind"]): string {
+  if (kind === "sync") return "Last sync";
+  if (kind === "manual") return "Manual ingest";
+  if (kind === "cleanup") return "Cleanup result";
+  return "Last reprocess";
+}
+
+function summaryDescription(kind: SummaryData["kind"]): string {
+  if (kind === "sync")
+    return "What happened to each fetched email as it moved through the pipeline.";
+  if (kind === "manual")
+    return "Pasted emails cleaned, classified, extracted, and scored.";
+  if (kind === "cleanup")
+    return "Removed emails sent by you and Google Classroom notifications that pre-dated the current Gmail filters.";
+  return "Noise rows re-run through the pipeline, then every opportunity rescored against your current profile.";
+}
+
+function summaryStats(
+  summary: SummaryData,
+): { label: string; value: number }[] {
+  const out: { label: string; value: number }[] = [];
+  if (summary.kind === "sync") {
+    if (typeof summary.emails_fetched === "number")
+      out.push({ label: "Fetched", value: summary.emails_fetched });
+    if (typeof summary.new_emails === "number")
+      out.push({ label: "New", value: summary.new_emails });
+    if (typeof summary.opportunities_active === "number")
+      out.push({
+        label: "New active opportunities",
+        value: summary.opportunities_active,
+      });
+    return out;
+  }
+  if (summary.kind === "manual") {
+    if (typeof summary.inserted === "number")
+      out.push({ label: "Inserted", value: summary.inserted });
+    if (typeof summary.skipped_duplicates === "number")
+      out.push({
+        label: "Duplicates skipped",
+        value: summary.skipped_duplicates,
+      });
+    if (typeof summary.opportunities_active === "number")
+      out.push({
+        label: "New active opportunities",
+        value: summary.opportunities_active,
+      });
+    return out;
+  }
+  if (summary.kind === "cleanup") {
+    if (typeof summary.raw_emails_removed === "number")
+      out.push({
+        label: "Raw emails removed",
+        value: summary.raw_emails_removed,
+      });
+    if (typeof summary.opportunities_removed === "number")
+      out.push({
+        label: "Opportunities removed",
+        value: summary.opportunities_removed,
+      });
+    return out;
+  }
+  // reprocess
+  if (typeof summary.reprocessed === "number")
+    out.push({ label: "Noise reprocessed", value: summary.reprocessed });
+  if (typeof summary.rescored === "number")
+    out.push({ label: "Opportunities rescored", value: summary.rescored });
+  if (typeof summary.opportunities_active === "number")
+    out.push({
+      label: "Active opportunities",
+      value: summary.opportunities_active,
+    });
+  return out;
 }
 
 type TraceRow = {
@@ -525,7 +615,12 @@ type TraceRow = {
 
 function TraceSection({ items }: { items: TraceRow[] }) {
   const [showAll, setShowAll] = useState(false);
-  const hiddenStatuses = new Set(["noise", "extract_failed", "skipped"]);
+  const hiddenStatuses = new Set([
+    "noise",
+    "extract_failed",
+    "skipped",
+    "duplicate",
+  ]);
   const filtered = showAll
     ? items
     : items.filter((i) => !hiddenStatuses.has(i.pipeline));
@@ -572,6 +667,7 @@ function TraceTable({
   const pipelineTone = (s: string) => {
     if (s === "active") return "green" as const;
     if (s === "expired" || s === "ineligible") return "yellow" as const;
+    if (s === "duplicate") return "muted" as const;
     if (s === "skipped") return "default" as const;
     if (s === "noise") return "default" as const;
     return "red" as const;

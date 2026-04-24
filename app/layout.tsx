@@ -36,7 +36,9 @@ export default function RootLayout({
       </head>
       <body className="min-h-full bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-50">
         <AppNav />
-        <main className="mx-auto max-w-6xl px-6 py-10">{children}</main>
+        <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10">
+          {children}
+        </main>
       </body>
     </html>
   );

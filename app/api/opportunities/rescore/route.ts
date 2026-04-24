@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase";
 import { rescoreStudent } from "@/lib/rescore";
+import { runExplanations } from "@/lib/explainRunner";
 import type { Student } from "@/types";
 
 export const runtime = "nodejs";
@@ -41,7 +42,18 @@ export async function POST(req: Request) {
     const items = await rescoreStudent(supabase, studentRow as Student, {
       includeHidden: parsed.data.include_hidden,
     });
-    return NextResponse.json({ rescored: items.length, items });
+    // Regenerate explanations for top opportunities whose explanation was just
+    // invalidated by `rescoreStudent` (status flip or ≥0.05 score swing).
+    // Skipped if no opportunity flipped to active.
+    const activeAfter = items.filter((i) => i.status === "active").length;
+    const explanations = activeAfter > 0
+      ? await runExplanations(parsed.data.student_id, 10)
+      : { updated: 0 };
+    return NextResponse.json({
+      rescored: items.length,
+      explanations_refreshed: explanations.updated ?? 0,
+      items,
+    });
   } catch (err) {
     return NextResponse.json(
       {

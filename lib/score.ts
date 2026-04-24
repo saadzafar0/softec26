@@ -11,16 +11,14 @@ export function daysUntil(deadline: string | null): number | null {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
-const ROLLING_OPP_TYPES = new Set([
-  "internship",
-  "mentorship",
-  "mentorship program",
-  "research",
-  "research program",
-  "research assistantship",
-  "job",
-  "position",
-]);
+// Matches LLM-extracted opp_type strings that describe rolling-admission
+// programs (no fixed deadline). Switched from an exact-string Set to a regex
+// because the LLM frequently outputs variants the Set never matched —
+// "summer internship", "RA position", "research opportunity", "paid internship",
+// etc. — silently dragging genuinely-rolling opportunities to the low-urgency
+// fallback (0.35) instead of the rolling baseline (0.55).
+const ROLLING_OPP_RX =
+  /\b(internship|mentorship|research|assistantship|job|position|fellowship\s+program)\b/i;
 
 export function urgencyScore(
   deadline: string | null,
@@ -30,7 +28,7 @@ export function urgencyScore(
   if (days === null) {
     // No deadline is normal for rolling-admission opportunities (internships,
     // mentorships, research). Don't penalize them as heavily as a missed date.
-    if (oppType && ROLLING_OPP_TYPES.has(oppType.toLowerCase())) return 0.55;
+    if (oppType && ROLLING_OPP_RX.test(oppType)) return 0.55;
     return 0.35;
   }
   if (days < 0) return 0;

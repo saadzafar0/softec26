@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createChatModel } from "./langchain";
+import { createChatModel, withLLMRetry } from "./langchain";
 import { EXTRACT_PROMPT } from "./prompts";
 
 // NOTE: OpenAI's strict structured outputs do not support string `format`
@@ -72,59 +72,75 @@ export async function extractFields(
   const prompt = EXTRACT_PROMPT.replace("{subject}", subject ?? "")
     .replace("{sender}", sender ?? "")
     .replace("{body}", body.slice(0, 8000));
-  try {
-    const result = await model.invoke(prompt);
 
-    const { deadline, ambiguous } = normalizeDeadline(result.deadline);
-    result.deadline = deadline;
-    if (ambiguous) result.deadline_ambiguous = true;
+  const result = await withLLMRetry("extract", () => model.invoke(prompt));
+  if (!result) return null;
 
-    result.cgpa_required = normalizeCgpa(result.cgpa_required);
+  const { deadline, ambiguous } = normalizeDeadline(result.deadline);
+  result.deadline = deadline;
+  if (ambiguous) result.deadline_ambiguous = true;
 
-    if (result.application_link) {
-      const trimmed = result.application_link.trim();
-      const isHttpUrl = /^https?:\/\//i.test(trimmed);
-      if (!isHttpUrl) {
-        result.application_link = null;
-      } else {
-        const urlRx = /https?:\/\/[^\s)]+/gi;
-        const urls = body.match(urlRx) ?? [];
-        const found = urls.some(
-          (u) => u.replace(/[.,;:]+$/, "") === trimmed,
-        );
-        result.application_link = found ? trimmed : null;
+  result.cgpa_required = normalizeCgpa(result.cgpa_required);
+
+  if (result.application_link) {
+    const trimmed = result.application_link.trim();
+    const isHttpUrl = /^https?:\/\//i.test(trimmed);
+    if (!isHttpUrl) {
+      result.application_link = null;
+    } else {
+      // Accept the URL if it either appears verbatim OR its hostname appears as
+      // a hostname of any URL in the body. This lets us keep LLM-expanded /
+      // normalized URLs (http→https, trailing slash added, tracking params
+      // stripped) without silently losing the Apply button.
+      const urlRx = /https?:\/\/[^\s)]+/gi;
+      const urls = body.match(urlRx) ?? [];
+      const cleanedUrls = urls.map((u) => u.replace(/[.,;:]+$/, ""));
+      let linkHost: string | null = null;
+      try {
+        linkHost = new URL(trimmed).hostname.toLowerCase().replace(/^www\./, "");
+      } catch {
+        linkHost = null;
       }
+      const verbatim = cleanedUrls.some((u) => u === trimmed);
+      const hostMatch = linkHost
+        ? cleanedUrls.some((u) => {
+            try {
+              const h = new URL(u).hostname.toLowerCase().replace(/^www\./, "");
+              return h === linkHost;
+            } catch {
+              return false;
+            }
+          })
+        : false;
+      result.application_link = verbatim || hostMatch ? trimmed : null;
     }
-
-    // Contact email: must look like an email AND appear verbatim in body.
-    if (result.contact_email) {
-      const email = result.contact_email.trim().toLowerCase();
-      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-      const appears = body.toLowerCase().includes(email);
-      result.contact_email = isEmail && appears ? email : null;
-    }
-    // Contact phone: keep only if it has at least 7 digits AND appears in body.
-    if (result.contact_phone) {
-      const phone = result.contact_phone.trim();
-      const digits = phone.replace(/\D/g, "");
-      const appears = body.includes(phone);
-      result.contact_phone = digits.length >= 7 && appears ? phone : null;
-    }
-    if (result.contact_person) {
-      const person = result.contact_person.trim();
-      result.contact_person = person.length > 1 && person.length < 120
-        ? person
-        : null;
-    }
-
-    return result;
-  } catch (err) {
-    console.error(
-      "[extract] extractFields failed:",
-      err instanceof Error ? err.message : err,
-    );
-    return null;
   }
+
+  // Contact email: must look like an email AND appear verbatim in body.
+  if (result.contact_email) {
+    const email = result.contact_email.trim().toLowerCase();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const appears = body.toLowerCase().includes(email);
+    result.contact_email = isEmail && appears ? email : null;
+  }
+  // Contact phone: keep if it has ≥7 digits AND those digits (in order) appear
+  // as a substring of the body's digit stream. Lets us accept LLM-normalized
+  // phones like "+92 300 1234567" even if the body has "0300-1234567".
+  if (result.contact_phone) {
+    const phone = result.contact_phone.trim();
+    const digits = phone.replace(/\D/g, "");
+    const bodyDigits = body.replace(/\D/g, "");
+    const appears = digits.length > 0 && bodyDigits.includes(digits);
+    result.contact_phone = digits.length >= 7 && appears ? phone : null;
+  }
+  if (result.contact_person) {
+    const person = result.contact_person.trim();
+    result.contact_person = person.length > 1 && person.length < 120
+      ? person
+      : null;
+  }
+
+  return result;
 }
 
 export function isExpired(deadline: string | null): boolean {

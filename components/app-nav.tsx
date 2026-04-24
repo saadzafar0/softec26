@@ -23,15 +23,15 @@ export function AppNav() {
 
   return (
     <header className="sticky top-0 z-30 w-full border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-6">
+      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-2 px-4 sm:gap-3 sm:px-6">
         <Link
           href={isAuthenticated ? "/dashboard" : "/signin"}
-          className="text-sm font-semibold tracking-tight"
+          className="truncate text-[13px] font-semibold tracking-tight sm:text-sm"
         >
           Opportunity Radar
         </Link>
 
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-0.5 sm:gap-1">
           {hydrated && isAuthenticated ? (
             <>
               {tabs.map((t) => {
@@ -41,7 +41,7 @@ export function AppNav() {
                     key={t.href}
                     href={t.href}
                     className={cn(
-                      "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                      "rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:px-3",
                       active
                         ? "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-50"
                         : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100",
@@ -64,7 +64,7 @@ export function AppNav() {
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                className="rounded-md px-2 py-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 sm:px-3"
               >
                 Sign out
               </button>
